@@ -39,6 +39,19 @@ def selftest(cfg, log_path) -> int:
         except Exception as exc:  # noqa: BLE001
             ok = False
             lines.append(f"  {name:<16}: АЛДАА {exc!r}")
+    from worktracker.cloud import CloudSync, cloud_configured
+    from worktracker.storage import Storage
+
+    if cloud_configured(cfg):
+        try:
+            sync = CloudSync(cfg, Storage(data_dir() / "worktime.db"), tracker=None)
+            sync._push_day(date.today().isoformat(), live=False)
+            lines.append(f"  Вэб самбар      : OK ({cfg['cloud']['supabase_url']})")
+        except Exception as exc:  # noqa: BLE001
+            ok = False
+            lines.append(f"  Вэб самбар      : АЛДАА {exc}")
+    else:
+        lines.append("  Вэб самбар      : тохируулаагүй")
     lines += [
         f"  Менежерийн тохир: {cfg.manager_path or '- (байхгүй)'}",
         f"  Ажилтны тохирг. : {cfg.path}",

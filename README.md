@@ -18,6 +18,7 @@
 | Хадгалах | SQLite (`worktime.db`) |
 | Цонх | Tkinter |
 | Тайлан | HTML + CSV, имэйл (smtplib) / Telegram бот |
+| Вэб самбар | Supabase (Postgres + RLS) + `docs/index.html` (GitHub Pages) |
 | Суулгах | PyInstaller → `AjliinButeemj.exe` / `AjliinButeemj.app` |
 
 Төлөв тодорхойлох дүрэм:
@@ -96,6 +97,54 @@ Python-оор ажиллуулахад өгөгдөл `data/` хавтаст х�
    (группт илгээх бол ботыг группт нэмээд группын id-г авна, сөрөг тоо байдаг).
 4. `config.json`: `"telegram": { "enabled": true, "bot_token": "...", "chat_id": "..." }`
 
+## Вэб самбар (Supabase, сервергүй)
+
+Менежер вэб хуудаснаас **бүх ажилтныг шууд** харна: хэн одоо ажиллаж / гарсан / офлайн, одоогийн апп,
+өдрийн явц (цагийн шугам), апп тус бүрийн хугацаа, сүүлийн 7 хоногийн цаг, CSV татах.
+Ажилтны програм минут тутам, мөн төлөв өөрчлөгдөх бүрт мэдээллээ илгээнэ. Интернэт тасарвал дараа нь нөхөж илгээнэ.
+
+Жишээ өгөгдөлтэй үзэх: `docs/index.html?demo` (эсвэл GitHub Pages хаягийн ард `?demo`).
+
+### Тохируулах (нэг удаа, ~15 минут)
+
+1. **Supabase төсөл:** <https://supabase.com> → New project. Region: *Northeast Asia (Seoul)* эсвэл *Tokyo* (Монголд ойр).
+2. **Схем:** SQL Editor → New query → [`supabase/schema.sql`](supabase/schema.sql)-ийг бүхэлд нь хуулж → **Run**.
+   Үр дүнд гарах `company_key`-г хуулж авна.
+3. **Менежерийн хэрэглэгч:** Authentication → Users → **Add user → Create new user** (имэйл + нууц үг, *Auto Confirm* чагтална).
+   Дараа нь SQL Editor дээр:
+   ```sql
+   insert into wt_managers(email) values ('manager@company.mn');
+   ```
+   Зөвхөн энэ жагсаалтад байгаа хэрэглэгч л мэдээлэл харна.
+4. **Нэмэлт хамгаалалт:** Authentication → Sign In / Providers → *Allow new users to sign up* унтраана.
+5. **Түлхүүрүүд:** Project Settings → API Keys → **Project URL** болон **Publishable key**
+   (эсвэл *Legacy API keys* табын `anon` key).
+6. **`config.json`** (ажилтнуудад тараах):
+   ```json
+   "cloud": { "enabled": true, "supabase_url": "https://xxxx.supabase.co",
+              "supabase_key": "sb_publishable_...", "company_key": "2-р алхмын түлхүүр",
+              "push_interval_sec": 60 }
+   ```
+7. **Самбарыг нийтлэх (GitHub Pages, үнэгүй):** GitHub repo → Settings → Pages → *Deploy from a branch* →
+   `main` / `/docs` → Save. Хэдэн минутын дараа `https://<github-нэр>.github.io/<repo>/` хаягаар нээгдэнэ.
+   Анх нээхэд Project URL + Publishable key-г асууна (тухайн хөтөчид хадгална), дараа нь нэвтэрнэ.
+   Хүсвэл `docs/index.html` доторх `DEFAULT_URL` / `DEFAULT_KEY`-г бөглөж болно (publishable key нууц биш).
+   GitHub ашиглахгүй бол `docs/index.html` файлыг компьютер дээрээ шууд нээсэн ч ажиллана.
+
+Ажилтны цонхон дээрх **"Вэб самбар"** мөр холболтын төлөвийг харуулна. `--selftest` нь туршилтын илгээлт хийж шалгана.
+
+### Хамгаалалт
+
+- Ажилтны програм хүснэгт рүү шууд бичиж чадахгүй. Зөвхөн `wt_push()` функцээр, компанийн түлхүүр болон
+  төхөөрөмж бүрийн автоматаар үүссэн нууц үгээр бичнэ. Нэг ажилтан нөгөөгийнхөө мэдээллийг дарж бичиж чадахгүй.
+- Нэвтрээгүй хүн, эсвэл `wt_managers`-д байхгүй хэрэглэгч юу ч уншиж чадахгүй. Менежер ч мэдээллийг өөрчилж чадахгүй
+  (зөвхөн ажлаас гарсан ажилтны төхөөрөмжийг устгана).
+- `company_key` алдагдвал: SQL Editor дээр
+  `update wt_settings set value = replace(gen_random_uuid()::text,'-','') where key='company_key';` → шинэ түлхүүрийг config.json-д.
+
+Supabase-ийн үнэгүй багц (500 MB) хангалттай: 20 ажилтан жилд ~10 MB. 7 хоног огт хэрэглээгүй төслийг
+Supabase түр зогсоодог ч ажлын өдрүүдэд програм тасралтгүй илгээдэг тул асуудалгүй.
+
 ## .exe / .app бүтээх (PyInstaller)
 
 PyInstaller нь **тухайн үйлдлийн систем дээрээ** л бүтээдэг: `.exe`-г Windows дээр, `.app`-г Mac дээр.
@@ -150,11 +199,15 @@ worktracker/
   storage.py            SQLite
   report.py             HTML / текст / CSV тайлан
   notify.py             имэйл, Telegram
+  cloud.py              Supabase руу илгээх (вэб самбар)
+  net.py                HTTPS (certifi)
   app.py                угсрах + тайлан илгээх хуваарь
   gui.py                Tkinter цонх
   system.py             автоматаар эхлэх, давхар ажиллахаас сэргийлэх, лог
   config.py             тохиргоо, замууд
 assets/face_detection_yunet_2023mar.onnx   царай илрүүлэх загвар (OpenCV Zoo, MIT)
+supabase/schema.sql     Supabase өгөгдлийн сан, хамгаалалт
+docs/index.html         менежерийн вэб самбар (GitHub Pages)
 AjliinButeemj.spec      PyInstaller тохиргоо
 build_windows.bat, build_mac.sh, .github/workflows/build.yml
 ```

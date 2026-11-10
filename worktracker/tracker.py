@@ -31,7 +31,8 @@ class Tracker:
         self.cfg = cfg
         self.storage = storage
         self.presence = presence
-        self.on_report_due = on_report_due  # callback(day) -> bool
+        self.on_report_due = on_report_due  # callback(now)
+        self.on_status_change = None  # callback() — төлөв солигдоход (самбар руу даруй илгээх)
 
         self.status = WORKING
         self.current_app: str | None = None
@@ -221,6 +222,8 @@ class Tracker:
             self.storage.update_period_end(self._period_id, _hms(at))
         self.status = status
         self._open_period(status, at)
+        if self.on_status_change:
+            self.on_status_change()
 
     def _open_period(self, status: str, at: datetime) -> None:
         self._period_id = self.storage.open_period(self._day, status, _hms(at))

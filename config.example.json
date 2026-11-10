@@ -18,11 +18,20 @@
     "username": "company.reports@gmail.com",
     "password": "16 оронтой App Password",
     "from_addr": "company.reports@gmail.com",
-    "to_addrs": ["manager@company.mn"]
+    "to_addrs": [
+      "manager@company.mn"
+    ]
   },
   "telegram": {
     "enabled": false,
     "bot_token": "123456789:AA...",
     "chat_id": "123456789"
+  },
+  "cloud": {
+    "enabled": true,
+    "supabase_url": "https://xxxxxxxx.supabase.co",
+    "supabase_key": "sb_publishable_... эсвэл anon key",
+    "company_key": "schema.sql-ийн гаргасан түлхүүр",
+    "push_interval_sec": 60
   }
 }

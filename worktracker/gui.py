@@ -61,7 +61,13 @@ class MainWindow:
         body.pack(fill="both", expand=True)
         self.rows: dict[str, tk.Label] = {}
         for i, (key, caption) in enumerate(
-            [("name", "Ажилтан"), ("away", "Ажлаас гарсан"), ("app", "Одоогийн апп"), ("cam", "Камер")]
+            [
+                ("name", "Ажилтан"),
+                ("away", "Ажлаас гарсан"),
+                ("app", "Одоогийн апп"),
+                ("cam", "Камер"),
+                ("cloud", "Вэб самбар"),
+            ]
         ):
             tk.Label(body, text=caption, font=(FONT, 11), fg=MUTED, bg=BG).grid(row=i, column=0, sticky="w", pady=2)
             lbl = tk.Label(body, text="", font=(FONT, 11), fg=FG, bg=BG, anchor="w", width=26)
@@ -70,14 +76,14 @@ class MainWindow:
         self.rows["name"].config(text=app.cfg["employee_name"] or "-")
 
         tk.Label(body, text="Өнөөдрийн аппууд", font=(FONT, 12, "bold"), fg=FG, bg=BG).grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(12, 4)
+            row=5, column=0, columnspan=2, sticky="w", pady=(12, 4)
         )
         self.app_rows: list[tuple[tk.Label, tk.Label]] = []
         for i in range(TOP_N):
             a = tk.Label(body, text="", font=(FONT, 11), fg=FG, bg=BG, anchor="w")
             b = tk.Label(body, text="", font=(FONT, 11), fg=MUTED, bg=BG, anchor="e")
-            a.grid(row=5 + i, column=0, sticky="w")
-            b.grid(row=5 + i, column=1, sticky="e")
+            a.grid(row=6 + i, column=0, sticky="w")
+            b.grid(row=6 + i, column=1, sticky="e")
             self.app_rows.append((a, b))
 
         # --- товчнууд
@@ -106,6 +112,7 @@ class MainWindow:
         else:
             cam = "Холбогдсон · " + ("царай харагдаж байна" if s["face_visible"] else "царай харагдахгүй")
         self.rows["cam"].config(text=cam)
+        self.rows["cloud"].config(text=self.app.cloud_status())
         for i, (a, b) in enumerate(self.app_rows):
             if i < len(s["top_apps"]):
                 name, sec = s["top_apps"][i]

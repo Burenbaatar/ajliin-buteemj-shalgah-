@@ -48,6 +48,14 @@ DEFAULTS: dict = {
         "bot_token": "",
         "chat_id": "",
     },
+    # Сервергүй вэб самбар (Supabase). README → "Вэб самбар" хэсгийг үз.
+    "cloud": {
+        "enabled": False,
+        "supabase_url": "",
+        "supabase_key": "",
+        "company_key": "",
+        "push_interval_sec": 60,
+    },
 }
 
 

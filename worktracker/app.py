@@ -8,6 +8,7 @@ import time
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
 
+from .cloud import CloudSync, cloud_configured
 from .config import Config, data_dir
 from .notify import channels_enabled, is_fully_sent, send_report
 from .storage import Storage
@@ -80,19 +81,32 @@ class App:
         self.scheduler = ReportScheduler(cfg, self.storage)
         self.tracker = Tracker(cfg, self.storage, self.presence, on_report_due=self.scheduler)
         self.scheduler.tracker = self.tracker
+        self.cloud: CloudSync | None = None
+        if cloud_configured(cfg):
+            self.cloud = CloudSync(cfg, self.storage, self.tracker)
+            self.tracker.on_status_change = self.cloud.poke
         self._stopped = False
 
     def start(self) -> None:
         if self.presence:
             self.presence.start()
         self.tracker.start()
+        if self.cloud:
+            self.cloud.start()
         log.info("Эхэллээ. Өгөгдөл: %s", self.storage.path)
+
+    def cloud_status(self) -> str:
+        if self.cloud:
+            return self.cloud.status_text()
+        return "Тохируулаагүй" if not self.cfg["cloud"].get("enabled") else "Тохиргоо дутуу"
 
     def stop(self) -> None:
         if self._stopped:
             return
         self._stopped = True
         self.tracker.stop()
+        if self.cloud:
+            self.cloud.stop()  # самбарт "Офлайн" гэж мэдэгдэнэ
         if self.presence:
             self.presence.stop()
         self.storage.close()

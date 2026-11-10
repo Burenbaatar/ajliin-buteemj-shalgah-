@@ -23,7 +23,7 @@ def _minutes_between(start: str, end: str) -> float:
     return (datetime.strptime(end, fmt) - datetime.strptime(start, fmt)).total_seconds() / 60.0
 
 
-def _merge_periods(periods: list[dict]) -> list[dict]:
+def merge_periods(periods: list[dict]) -> list[dict]:
     """Дараалсан ижил төлөвтэй үеүдийг нэгтгэнэ (програм дахин эхэлсэн гэх мэт)."""
     out: list[dict] = []
     for p in periods:
@@ -42,7 +42,7 @@ def build_report(storage: Storage, day: str, employee: str, min_away_min: float 
     total_apps = sum(s for _, s in d["apps"]) or 1.0
     away_periods = [
         p
-        for p in _merge_periods(d["periods"])
+        for p in merge_periods(d["periods"])
         if p["status"] == "away" and _minutes_between(p["start"], p["end"]) >= min_away_min
     ]
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")

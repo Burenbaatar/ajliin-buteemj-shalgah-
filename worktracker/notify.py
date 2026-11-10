@@ -5,12 +5,11 @@ import html
 import json
 import logging
 import smtplib
-import ssl
-import urllib.request
 import uuid
 from email.message import EmailMessage
 from pathlib import Path
 
+from .net import post_json, ssl_context
 from .report import build_report, fmt_dur, save_report
 from .storage import Storage
 
@@ -34,7 +33,7 @@ def send_email(cfg: dict, subject: str, text: str, html_body: str, attachments: 
         msg.add_attachment(p.read_bytes(), maintype="text", subtype=sub, filename=p.name)
 
     host, port = cfg["smtp_host"], int(cfg["smtp_port"])
-    ctx = ssl.create_default_context()
+    ctx = ssl_context()
     if cfg.get("use_ssl", True):
         server = smtplib.SMTP_SSL(host, port, context=ctx, timeout=30)
     else:
@@ -47,11 +46,10 @@ def send_email(cfg: dict, subject: str, text: str, html_body: str, attachments: 
 
 
 def _tg_call(token: str, method: str, data: bytes, content_type: str) -> None:
-    req = urllib.request.Request(
-        f"https://api.telegram.org/bot{token}/{method}", data=data, headers={"Content-Type": content_type}
+    raw = post_json(
+        f"https://api.telegram.org/bot{token}/{method}", data, {"Content-Type": content_type}, timeout=30
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
+    body = json.loads(raw.decode("utf-8"))
     if not body.get("ok"):
         raise RuntimeError(f"Telegram: {body}")
 

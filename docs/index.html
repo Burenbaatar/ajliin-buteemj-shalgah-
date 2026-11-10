@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="mn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ажлын бүтээмж — Самбар</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<style>
+:root {
+  --bg: #f6f8fa; --surface: #ffffff; --text: #1f2328; --muted: #656d76; --border: #d0d7de; --soft: #eaeef2;
+  --accent: #0969da; --work: #1a7f37; --work-soft: #dafbe1; --away: #cf222e; --away-soft: #ffebe9;
+  --off: #8c959f; --off-soft: #eaeef2; --gap: #eef1f4; --shadow: 0 1px 2px rgba(31,35,40,.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1117; --surface: #161b22; --text: #e6edf3; --muted: #8d96a0; --border: #30363d; --soft: #21262d;
+    --accent: #4493f8; --work: #3fb950; --work-soft: #12261e; --away: #f85149; --away-soft: #2d1416;
+    --off: #6e7681; --off-soft: #21262d; --gap: #262c36; --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d1117; --surface: #161b22; --text: #e6edf3; --muted: #8d96a0; --border: #30363d; --soft: #21262d;
+  --accent: #4493f8; --work: #3fb950; --work-soft: #12261e; --away: #f85149; --away-soft: #2d1416;
+  --off: #6e7681; --off-soft: #21262d; --gap: #262c36; --shadow: none;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+button, input { font: inherit; color: inherit; }
+a { color: var(--accent); }
+.wrap { max-width: 1200px; margin: 0 auto; padding: 0 16px 48px; }
+header { position: sticky; top: 0; z-index: 5; background: var(--surface); border-bottom: 1px solid var(--border); }
+header .wrap { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 10px; padding-bottom: 10px; }
+header h1 { font-size: 16px; margin: 0 auto 0 0; white-space: nowrap; }
+.btn { border: 1px solid var(--border); background: var(--surface); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+.btn:hover { background: var(--soft); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.danger { color: var(--away); }
+input[type=date], input[type=text], input[type=email], input[type=password] {
+  border: 1px solid var(--border); background: var(--surface); border-radius: 6px; padding: 5px 8px; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0; }
+.kpi { padding: 12px 14px; }
+.kpi .k { color: var(--muted); font-size: 12px; }
+.kpi .v { font-size: 24px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.kpi.work .v { color: var(--work); } .kpi.away .v { color: var(--away); } .kpi.off .v { color: var(--off); }
+h2 { font-size: 15px; margin: 24px 0 8px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 9px 10px; border-bottom: 1px solid var(--soft); text-align: left; vertical-align: middle; white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+tbody tr.click { cursor: pointer; } tbody tr.click:hover { background: var(--soft); }
+tr:last-child td { border-bottom: 0; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 500; }
+.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pill.working { color: var(--work); background: var(--work-soft); }
+.pill.away { color: var(--away); background: var(--away-soft); }
+.pill.offline { color: var(--off); background: var(--off-soft); }
+.name { font-weight: 600; } .host { color: var(--muted); font-size: 12px; }
+.tl { position: relative; height: 10px; min-width: 160px; background: var(--gap); border-radius: 3px; overflow: hidden; }
+.tl.big { height: 22px; border-radius: 5px; }
+.tl span { position: absolute; top: 0; bottom: 0; }
+.tl .working { background: var(--work); } .tl .away { background: var(--away); }
+.ticks { position: relative; height: 16px; font-size: 11px; color: var(--muted); }
+.ticks span { position: absolute; transform: translateX(-50%); }
+.bar { height: 8px; background: var(--accent); border-radius: 3px; min-width: 2px; }
+.heat { text-align: center; border-radius: 4px; font-variant-numeric: tabular-nums; }
+.center { max-width: 380px; margin: 10vh auto; padding: 24px; }
+.center h2 { margin-top: 0; }
+.field { display: grid; gap: 4px; margin-bottom: 12px; }
+.field input { width: 100%; }
+.err { color: var(--away); margin: 8px 0; white-space: pre-wrap; }
+.notice { padding: 10px 14px; margin-top: 16px; border-left: 3px solid var(--accent); }
+dialog { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text);
+  width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog .head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--soft); }
+dialog .head h3 { margin: 0 auto 0 0; font-size: 16px; }
+dialog .body { padding: 14px 18px 18px; overflow-y: auto; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.hidden { display: none !important; }
+@media (max-width: 600px) { .hide-sm { display: none; } header h1 { font-size: 15px; } }
+</style>
+</head>
+<body>
+
+<!-- Supabase тохиргоо -->
+<section id="setup" class="card center hidden">
+  <h2>Самбарын тохиргоо</h2>
+  <p class="muted small">Supabase → Project Settings → API хэсгээс авна. Энэ мэдээлэл зөвхөн энэ хөтөчид хадгалагдана.</p>
+  <div class="field"><label for="s-url">Project URL</label><input id="s-url" type="text" placeholder="https://xxxx.supabase.co"></div>
+  <div class="field"><label for="s-key">Publishable (anon) key</label><input id="s-key" type="text" placeholder="sb_publishable_... / eyJ..."></div>
+  <button class="btn primary" id="s-save">Хадгалах</button>
+  <p class="muted small">Туршиж үзэх: <a href="?demo">жишээ өгөгдөлтэй самбар</a></p>
+</section>
+
+<!-- Нэвтрэх -->
+<section id="login" class="card center hidden">
+  <h2>Менежер нэвтрэх</h2>
+  <form id="l-form">
+    <div class="field"><label for="l-email">Имэйл</label><input id="l-email" type="email" autocomplete="username" required></div>
+    <div class="field"><label for="l-pass">Нууц үг</label><input id="l-pass" type="password" autocomplete="current-password" required></div>
+    <button class="btn primary" type="submit">Нэвтрэх</button>
+  </form>
+  <div id="l-err" class="err"></div>
+  <p class="small"><a href="#" id="l-reset" class="muted">Supabase тохиргоог солих</a></p>
+</section>
+
+<!-- Самбар -->
+<div id="app" class="hidden">
+  <header><div class="wrap">
+    <h1>Ажлын бүтээмж</h1>
+    <input type="date" id="day" aria-label="Огноо">
+    <button class="btn" id="refresh" title="Шинэчлэх">⟳</button>
+    <button class="btn hide-sm" id="csv">CSV</button>
+    <span class="muted small hide-sm" id="who"></span>
+    <button class="btn" id="logout">Гарах</button>
+  </div></header>
+  <main class="wrap">
+    <div id="err" class="err"></div>
+    <div class="kpis" id="kpis"></div>
+
+    <h2>Ажилтнууд <span class="muted small" id="updated"></span></h2>
+    <div class="card scroll">
+      <table>
+        <thead><tr>
+          <th>Ажилтан</th><th>Одоо</th><th class="hide-sm">Одоогийн апп</th>
+          <th class="num">Ажилласан</th><th class="num">Гарсан</th><th>Ирсэн – Явсан</th>
+          <th>Өдрийн явц</th><th class="hide-sm">Их ашигласан апп</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="legend"><span><i style="background:var(--work)"></i>Ажилласан</span>
+      <span><i style="background:var(--away)"></i>Гарсан</span><span><i style="background:var(--gap)"></i>Компьютер унтраалттай</span></div>
+
+    <h2>Сүүлийн 7 хоног <span class="muted small">ажилласан цаг</span></h2>
+    <div class="card scroll"><table id="week"></table></div>
+    <p class="muted small">Мөр дээр дарж дэлгэрэнгүйг харна. 30 секунд тутам автоматаар шинэчлэгдэнэ.</p>
+  </main>
+</div>
+
+<dialog id="detail">
+  <div class="head"><h3 id="d-title"></h3><button class="btn" id="d-close">Хаах</button></div>
+  <div class="body" id="d-body"></div>
+</dialog>
+
+<script>
+// Бүх менежер тохиргоо оруулахгүйгээр нэвтрэх бол энд бичиж болно (publishable key нь нууц биш).
+const DEFAULT_URL = "";
+const DEFAULT_KEY = "";
+
+const OFFLINE_AFTER_SEC = 180;      // сүүлийн мэдээллээс хойш ийм удаан бол "Офлайн"
+const REFRESH_MS = 30000;
+const DEMO = new URLSearchParams(location.search).has("demo");
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+
+// ------------------------------------------------------------------ туслах функцүүд
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+function localISO(d = new Date()) { return d.toLocaleDateString("sv-SE"); }
+function addDays(iso, n) { const d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + n); return localISO(d); }
+function fmtDur(sec) {
+  const m = Math.round((sec || 0) / 60), h = Math.floor(m / 60), r = m % 60;
+  return h ? `${h}ц ${String(r).padStart(2, "0")}м` : `${r} мин`;
+}
+function fmtHM(sec) { const m = Math.round((sec || 0) / 60); return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`; }
+function ago(ts) {
+  if (!ts) return "";
+  const s = Math.max(0, (Date.now() - new Date(ts)) / 1000);
+  if (s < 60) return "дөнгөж сая";
+  return s < 3600 ? `${Math.floor(s / 60)} мин` : `${Math.floor(s / 3600)}ц ${Math.floor((s % 3600) / 60)}м`;
+}
+const toSec = (t) => { const [h, m, s] = String(t).split(":").map(Number); return h * 3600 + m * 60 + (s || 0); };
+const STATUS = { working: "Ажиллаж байна", away: "Гарсан", offline: "Офлайн" };
+function liveStatus(dev) {
+  if (!dev || dev.status === "offline") return "offline";
+  if ((Date.now() - new Date(dev.last_seen_at)) / 1000 > OFFLINE_AFTER_SEC) return "offline";
+  return dev.status === "away" ? "away" : "working";
+}
+function timeline(periods, range, big = false) {
+  const [a, b] = range, span = b - a || 1;
+  const segs = (periods || []).map(([st, s, e]) => {
+    const x = Math.max(a, toSec(s)), y = Math.min(b, toSec(e));
+    if (y <= x || (st !== "working" && st !== "away")) return "";
+    return `<span class="${st}" style="left:${((x - a) / span) * 100}%;width:${((y - x) / span) * 100}%" title="${esc(s.slice(0, 5))}–${esc(e.slice(0, 5))}"></span>`;
+  }).join("");
+  return `<div class="tl${big ? " big" : ""}">${segs}</div>`;
+}
+function dayRange(list) {
+  let lo = 8 * 3600, hi = 18 * 3600;
+  for (const p of list) for (const [, s, e] of p || []) { lo = Math.min(lo, toSec(s)); hi = Math.max(hi, toSec(e)); }
+  return [Math.floor(lo / 3600) * 3600, Math.ceil(hi / 3600) * 3600];
+}
+
+// ------------------------------------------------------------------ өгөгдөл
+let sb = null, state = { devices: [], daily: [], week: [] }, timer = null;
+
+async function fetchData(day) {
+  if (DEMO) return demoData(day);
+  const d0 = addDays(day, -6);
+  const [dev, daily, week] = await Promise.all([
+    sb.from("wt_devices").select("id,employee,hostname,platform,status,current_app,camera_ok,status_since,last_seen_at"),
+    sb.from("wt_daily").select("device_id,day,employee,work_seconds,away_seconds,first_seen,last_seen,apps,periods").eq("day", day),
+    sb.from("wt_daily").select("device_id,day,work_seconds").gte("day", d0).lte("day", day),
+  ]);
+  for (const r of [dev, daily, week]) if (r.error) throw r.error;
+  return { devices: dev.data, daily: daily.data, week: week.data };
+}
+
+async function load() {
+  const day = $("day").value;
+  try {
+    state = await fetchData(day);
+    $("err").textContent = "";
+    render(day);
+    $("updated").textContent = "· шинэчилсэн " + new Date().toLocaleTimeString("en-GB", { hour12: false });
+  } catch (e) {
+    $("err").textContent = "Мэдээлэл татаж чадсангүй: " + (e.message || e);
+  }
+}
+
+// ------------------------------------------------------------------ дүрслэх
+function people(day) {
+  const byDev = new Map(state.daily.map((r) => [r.device_id, r]));
+  const isToday = day === localISO();
+  const list = state.devices.map((d) => ({ dev: d, day: byDev.get(d.id), live: liveStatus(d) }));
+  // Устгагдсан төхөөрөмжгүй өдрийн мөр (байх ёсгүй ч)
+  for (const r of state.daily) if (!state.devices.some((d) => d.id === r.device_id)) list.push({ dev: null, day: r, live: "offline" });
+  const order = { working: 0, away: 1, offline: 2 };
+  return list
+    .filter((p) => isToday || p.day)
+    .sort((a, b) => order[a.live] - order[b.live] || (b.day?.work_seconds || 0) - (a.day?.work_seconds || 0));
+}
+
+function render(day) {
+  const list = people(day);
+  const count = (s) => list.filter((p) => p.live === s).length;
+  const total = list.reduce((t, p) => t + (p.day?.work_seconds || 0), 0);
+  const withData = list.filter((p) => p.day?.work_seconds).length;
+  const isToday = day === localISO();
+  $("kpis").innerHTML = [
+    ["Ажилтан", list.length, ""],
+    ...(isToday ? [["Ажиллаж байна", count("working"), "work"], ["Гарсан", count("away"), "away"], ["Офлайн", count("offline"), "off"]] : []),
+    ["Нийт ажилласан", fmtDur(total), ""],
+    ["Дундаж / хүн", withData ? fmtDur(total / withData) : "—", ""],
+  ].map(([k, v, c]) => `<div class="card kpi ${c}"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`).join("");
+
+  const range = dayRange(list.map((p) => p.day?.periods));
+  $("rows").innerHTML = list.length ? list.map((p, i) => {
+    const d = p.day || {}, dev = p.dev || {};
+    const apps = (d.apps || []).slice(0, 3).map(([a, s]) => `${esc(a)} <span class="muted">${fmtDur(s)}</span>`).join(", ");
+    const since = p.live !== "offline" ? ago(dev.status_since) : (dev.last_seen_at ? ago(dev.last_seen_at) + " өмнө" : "");
+    return `<tr class="click" data-i="${i}">
+      <td><div class="name">${esc(dev.employee || d.employee || "(нэргүй)")}</div><div class="host">${esc(dev.hostname || "")}</div></td>
+      <td><span class="pill ${p.live}">${STATUS[p.live]}</span> <span class="muted small">${esc(since)}</span></td>
+      <td class="hide-sm">${p.live === "offline" ? '<span class="muted">—</span>' : esc(dev.current_app || "—")}</td>
+      <td class="num"><b>${fmtDur(d.work_seconds)}</b></td>
+      <td class="num">${fmtDur(d.away_seconds)}</td>
+      <td>${esc((d.first_seen || "—").slice(0, 5))} – ${esc((d.last_seen || "—").slice(0, 5))}</td>
+      <td>${timeline(d.periods, range)}</td>
+      <td class="hide-sm small">${apps || '<span class="muted">—</span>'}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="8" class="muted">Энэ өдөр мэдээлэл алга. Ажилтны програмын config.json-д "cloud" тохиргоо хийгдсэн эсэхийг шалгана уу.</td></tr>`;
+  $("rows").querySelectorAll("tr.click").forEach((tr) => tr.addEventListener("click", () => openDetail(list[+tr.dataset.i], day)));
+
+  renderWeek(day);
+}
+
+function renderWeek(day) {
+  const days = Array.from({ length: 7 }, (_, i) => addDays(day, i - 6));
+  const names = new Map(state.devices.map((d) => [d.id, d.employee || d.hostname]));
+  const grid = new Map();
+  for (const r of state.week) {
+    if (!grid.has(r.device_id)) grid.set(r.device_id, {});
+    grid.get(r.device_id)[r.day] = r.work_seconds;
+  }
+  const max = Math.max(8 * 3600, ...state.week.map((r) => r.work_seconds));
+  const wd = ["Ня", "Да", "Мя", "Лх", "Пү", "Ба", "Бя"];
+  const head = `<thead><tr><th>Ажилтан</th>${days.map((d) => `<th class="num">${wd[new Date(d + "T12:00").getDay()]} ${d.slice(5).replace("-", "/")}</th>`).join("")}<th class="num">Нийт</th></tr></thead>`;
+  const rows = [...grid.entries()]
+    .map(([id, v]) => [names.get(id) || "(устгагдсан)", v, Object.values(v).reduce((a, b) => a + b, 0)])
+    .sort((a, b) => b[2] - a[2])
+    .map(([name, v, tot]) => `<tr><td class="name">${esc(name)}</td>${days.map((d) => {
+      const s = v[d] || 0, a = s ? 0.12 + 0.6 * (s / max) : 0;
+      return `<td><div class="heat" style="background:${s ? `color-mix(in srgb, var(--work) ${Math.round(a * 100)}%, transparent)` : "transparent"}">${s ? fmtHM(s) : '<span class="muted">·</span>'}</div></td>`;
+    }).join("")}<td class="num"><b>${fmtHM(tot)}</b></td></tr>`).join("");
+  $("week").innerHTML = head + `<tbody>${rows || `<tr><td colspan="9" class="muted">Мэдээлэл алга</td></tr>`}</tbody>`;
+}
+
+function openDetail(p, day) {
+  const d = p.day || {}, dev = p.dev || {};
+  $("d-title").textContent = `${dev.employee || d.employee || "(нэргүй)"} — ${day}`;
+  const range = dayRange([d.periods]);
+  const ticks = [];
+  for (let h = range[0]; h <= range[1]; h += 7200) ticks.push(`<span style="left:${((h - range[0]) / (range[1] - range[0])) * 100}%">${String(h / 3600).padStart(2, "0")}:00</span>`);
+  const totalApps = (d.apps || []).reduce((t, [, s]) => t + s, 0) || 1;
+  const aways = (d.periods || []).filter(([st, s, e]) => st === "away" && toSec(e) - toSec(s) >= 60);
+  $("d-body").innerHTML = `
+    <p><span class="pill ${p.live}">${STATUS[p.live]}</span>
+      <span class="muted small">${esc(dev.hostname || "")} · ${esc(dev.platform || "")} · камер: ${dev.camera_ok === false ? "олдсонгүй" : dev.camera_ok ? "OK" : "—"} · сүүлд холбогдсон: ${dev.last_seen_at ? esc(ago(dev.last_seen_at)) + " өмнө" : "—"}</span></p>
+    <div class="kpis">
+      <div class="card kpi work"><div class="k">Ажилласан</div><div class="v">${fmtDur(d.work_seconds)}</div></div>
+      <div class="card kpi away"><div class="k">Гарсан</div><div class="v">${fmtDur(d.away_seconds)}</div></div>
+      <div class="card kpi"><div class="k">Ирсэн – Явсан</div><div class="v">${esc((d.first_seen || "—").slice(0, 5))} – ${esc((d.last_seen || "—").slice(0, 5))}</div></div>
+    </div>
+    <h2>Өдрийн явц</h2>
+    ${timeline(d.periods, range, true)}<div class="ticks">${ticks.join("")}</div>
+    <h2>Апп тус бүр</h2>
+    <table>${(d.apps || []).map(([a, s]) => `<tr><td>${esc(a)}</td><td class="num">${fmtDur(s)}</td>
+      <td style="width:40%"><div class="bar" style="width:${(s / totalApps) * 100}%"></div></td>
+      <td class="num muted">${((s / totalApps) * 100).toFixed(0)}%</td></tr>`).join("") || '<tr><td class="muted">Мэдээлэл алга</td></tr>'}</table>
+    <h2>Ажлаас гарсан үеүд <span class="muted small">(≥ 1 мин)</span></h2>
+    <table>${aways.map(([, s, e]) => `<tr><td>${esc(s.slice(0, 5))} – ${esc(e.slice(0, 5))}</td><td class="num">${fmtDur(toSec(e) - toSec(s))}</td></tr>`).join("") || '<tr><td class="muted">Байхгүй</td></tr>'}</table>
+    ${dev.id && !DEMO ? `<p style="margin-top:20px"><button class="btn danger" id="d-del">Төхөөрөмжийг устгах</button>
+      <span class="muted small">Ажлаас гарсан ажилтных. Бүх түүх устна.</span></p>` : ""}`;
+  const del = $("d-del");
+  if (del) del.onclick = async () => {
+    if (!confirm(`"${dev.employee}" (${dev.hostname})-ийн бүх мэдээллийг устгах уу?`)) return;
+    const { error } = await sb.from("wt_devices").delete().eq("id", dev.id);
+    if (error) return alert(error.message);
+    $("detail").close(); load();
+  };
+  $("detail").showModal();
+}
+
+function downloadCSV() {
+  const day = $("day").value;
+  const rows = [["Ажилтан", "Компьютер", "Огноо", "Ажилласан (мин)", "Гарсан (мин)", "Ирсэн", "Явсан", "Аппууд (мин)"]];
+  for (const p of people(day)) {
+    const d = p.day || {};
+    rows.push([p.dev?.employee || d.employee || "", p.dev?.hostname || "", day, Math.round((d.work_seconds || 0) / 60),
+      Math.round((d.away_seconds || 0) / 60), d.first_seen || "", d.last_seen || "",
+      (d.apps || []).map(([a, s]) => `${a} ${Math.round(s / 60)}`).join("; ")]);
+  }
+  const csv = "﻿" + rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = `ajliin-buteemj-${day}.csv`;
+  a.click();
+}
+
+// ------------------------------------------------------------------ дэлгэц солих
+function show(id) { for (const s of ["setup", "login", "app"]) $(s).classList.toggle("hidden", s !== id); }
+
+async function startApp(email) {
+  show("app");
+  $("who").textContent = email || "";
+  if (!$("day").value) $("day").value = localISO();
+  await load();
+  clearInterval(timer);
+  timer = setInterval(() => { if (!document.hidden && !$("detail").open) load(); }, REFRESH_MS);
+}
+
+async function afterLogin(session) {
+  const { data: ok, error } = await sb.rpc("wt_is_manager");
+  if (error || !ok) {
+    await sb.auth.signOut();
+    show("login");
+    $("l-err").textContent = error ? error.message
+      : `"${session.user.email}" менежерийн жагсаалтад алга.\nSupabase SQL Editor дээр:\ninsert into wt_managers(email) values ('${session.user.email}');`;
+    return;
+  }
+  startApp(session.user.email);
+}
+
+async function init() {
+  $("day").addEventListener("change", load);
+  $("refresh").addEventListener("click", load);
+  $("csv").addEventListener("click", downloadCSV);
+  $("d-close").addEventListener("click", () => $("detail").close());
+
+  if (DEMO) {
+    $("logout").textContent = "Жишээ";
+    $("logout").onclick = () => (location.search = "");
+    return startApp("жишээ өгөгдөл");
+  }
+  const url = store.get("wt_url") || DEFAULT_URL, key = store.get("wt_key") || DEFAULT_KEY;
+  $("s-save").onclick = () => {
+    const u = $("s-url").value.trim().replace(/\/+$/, ""), k = $("s-key").value.trim();
+    if (!/^https:\/\/.+/.test(u) || !k) return alert("URL болон key-г бөглөнө үү");
+    store.set("wt_url", u); store.set("wt_key", k); location.reload();
+  };
+  $("l-reset").onclick = (e) => { e.preventDefault(); store.del("wt_url"); store.del("wt_key"); location.reload(); };
+  if (!url || !key) return show("setup");
+
+  sb = supabase.createClient(url, key);
+  $("logout").onclick = async () => { await sb.auth.signOut(); location.reload(); };
+  $("l-form").onsubmit = async (e) => {
+    e.preventDefault();
+    $("l-err").textContent = "";
+    const { data, error } = await sb.auth.signInWithPassword({ email: $("l-email").value.trim(), password: $("l-pass").value });
+    if (error) return ($("l-err").textContent = error.message === "Invalid login credentials" ? "Имэйл эсвэл нууц үг буруу" : error.message);
+    afterLogin(data.session);
+  };
+  const { data } = await sb.auth.getSession();
+  if (data.session) afterLogin(data.session); else show("login");
+}
+
+// ------------------------------------------------------------------ жишээ өгөгдөл (?demo)
+function demoData(day) {
+  const names = [["Бат-Эрдэнэ", "PC-SALES-01", "Windows 11"], ["Сарангэрэл", "MacBook-Saraa", "Darwin 24"], ["Тэмүүлэн", "PC-DEV-03", "Windows 11"],
+    ["Нармандах", "PC-ACC-02", "Windows 10"], ["Оюунчимэг", "PC-HR-01", "Windows 11"], ["Ганзориг", "MacBook-Gana", "Darwin 23"]];
+  const appsets = [["Microsoft Excel", "Google Chrome", "Microsoft Outlook", "Telegram"], ["Figma", "Google Chrome", "Slack", "Finder"],
+    ["Visual Studio Code", "Google Chrome", "Windows Terminal", "Microsoft Teams"], ["1C:Enterprise", "Microsoft Excel", "Google Chrome", "Telegram"],
+    ["Microsoft Word", "Microsoft Outlook", "Google Chrome", "Microsoft Excel"], ["Safari", "Microsoft Word", "Telegram", "Zoom"]];
+  let seed = [...day].reduce((a, c) => a * 31 + c.charCodeAt(0), 7) >>> 0;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+  const hms = (s) => [s / 3600, (s % 3600) / 60, s % 60].map((x) => String(Math.floor(x)).padStart(2, "0")).join(":");
+  const isToday = day === localISO();
+  const nowSec = (() => { const n = new Date(); return n.getHours() * 3600 + n.getMinutes() * 60; })();
+  const devices = [], daily = [];
+  names.forEach(([emp, host, plat], i) => {
+    const id = "demo-" + i;
+    let t = 8.5 * 3600 + rnd() * 3600, end = isToday ? Math.min(nowSec, 18 * 3600) : 17.5 * 3600 + rnd() * 3600;
+    if (i === 5 && isToday) end = Math.min(end, 15 * 3600);
+    const periods = []; let work = 0, away = 0;
+    while (t < end - 60) {
+      const w = Math.min(end - t, 1800 + rnd() * 5400); periods.push(["working", hms(t), hms(t + w)]); work += w; t += w;
+      if (t >= end - 60) break;
+      const a = rnd() < 0.2 ? 2400 + rnd() * 1800 : 120 + rnd() * 900; const aa = Math.min(end - t, a);
+      periods.push(["away", hms(t), hms(t + aa)]); away += aa; t += aa;
+    }
+    const w = [0.45, 0.25, 0.18, 0.12].map((f) => f * (0.8 + rnd() * 0.4)), ws = w.reduce((a, b) => a + b, 0);
+    const apps = appsets[i].map((a, k) => [a, Math.round((work * w[k]) / ws)]);
+    daily.push({ device_id: id, day, employee: emp, work_seconds: Math.round(work), away_seconds: Math.round(away),
+      first_seen: periods[0]?.[1], last_seen: periods.at(-1)?.[2], apps, periods });
+    const last = periods.at(-1) || ["offline"];
+    const off = !isToday || i === 5 || nowSec > end + 600;
+    devices.push({ id, employee: emp, hostname: host, platform: plat, camera_ok: i !== 3,
+      status: off ? "offline" : last[0], current_app: apps[Math.floor(rnd() * 2)][0],
+      status_since: new Date(Date.now() - (60 + rnd() * 1500) * 1000).toISOString(),
+      last_seen_at: (off ? new Date(`${day}T${hms(end)}`) : new Date(Date.now() - 20e3)).toISOString() });
+  });
+  const week = [];
+  for (let k = 6; k >= 0; k--) {
+    const d = addDays(day, -k), wdn = new Date(d + "T12:00").getDay();
+    names.forEach((_, i) => {
+      if (k === 0) return week.push({ device_id: "demo-" + i, day: d, work_seconds: daily[i].work_seconds });
+      if (wdn === 0 || (wdn === 6 && i % 3)) return;
+      week.push({ device_id: "demo-" + i, day: d, work_seconds: Math.round((5.5 + rnd() * 3) * 3600) });
+    });
+  }
+  return { devices, daily, week };
+}
+
+init();
+</script>
+</body>
+</html>
