@@ -1,5 +1,4 @@
 {
-  "employee_name": "Бат-Эрдэнэ",
   "camera_index": 0,
   "camera_check_interval_sec": 1.0,
   "away_grace_sec": 20,
@@ -11,7 +10,7 @@
   "autostart": true,
   "always_on_top": false,
   "email": {
-    "enabled": true,
+    "enabled": false,
     "smtp_host": "smtp.gmail.com",
     "smtp_port": 465,
     "use_ssl": true,
@@ -28,10 +27,6 @@
     "chat_id": "123456789"
   },
   "cloud": {
-    "enabled": true,
-    "supabase_url": "https://xxxxxxxx.supabase.co",
-    "supabase_key": "sb_publishable_... эсвэл anon key",
-    "company_key": "schema.sql-ийн гаргасан түлхүүр",
     "push_interval_sec": 60
   }
 }

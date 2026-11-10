@@ -3,14 +3,20 @@
 #   Windows дээр -> dist/AjliinButeemj.exe   (нэг файл)
 #   macOS дээр   -> dist/AjliinButeemj.app
 # Анхаар: Windows .exe-г зөвхөн Windows дээр, .app-г зөвхөн Mac дээр бүтээнэ.
+import os
 import sys
 
 APP = "AjliinButeemj"
-VERSION = "1.0.0"
+VERSION = "2.0.0"
+
+datas = [("assets/face_detection_yunet_2023mar.onnx", "assets")]
+# server.json (Supabase URL + publishable key) байвал програмд багцална → ажилтан юу ч тохируулахгүй
+if os.path.exists("server.json"):
+    datas.append(("server.json", "."))
 
 a = Analysis(
     ["main.py"],
-    datas=[("assets/face_detection_yunet_2023mar.onnx", "assets")],
+    datas=datas,
     hiddenimports=[],
     excludes=["matplotlib", "PIL", "scipy", "pandas", "IPython", "pytest"],
     noarchive=False,

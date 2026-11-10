@@ -8,8 +8,8 @@ import time
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
 
-from .cloud import CloudSync, cloud_configured
-from .config import Config, data_dir
+from .cloud import CloudSync
+from .config import Config, data_dir, user_data_dir
 from .notify import channels_enabled, is_fully_sent, send_report
 from .storage import Storage
 from .tracker import Tracker
@@ -66,12 +66,19 @@ class ReportScheduler:
             self._busy.release()
 
 
+def storage_path(user_id: str | None):
+    """Нэвтэрсэн хэрэглэгч бүр тусдаа өгөгдлийн сантай."""
+    return (user_data_dir(user_id) if user_id else data_dir()) / "worktime.db"
+
+
 class App:
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, supa=None, profile: dict | None = None):
         from .presence import PresenceMonitor  # OpenCV-г хэрэгтэй үед л ачаална
 
         self.cfg = cfg
-        self.storage = Storage(data_dir() / "worktime.db")
+        self.supa = supa
+        self.profile = profile
+        self.storage = Storage(storage_path(supa.user_id if supa else None))
         self.presence: PresenceMonitor | None
         try:
             self.presence = PresenceMonitor(cfg["camera_index"], cfg["camera_check_interval_sec"])
@@ -82,8 +89,8 @@ class App:
         self.tracker = Tracker(cfg, self.storage, self.presence, on_report_due=self.scheduler)
         self.scheduler.tracker = self.tracker
         self.cloud: CloudSync | None = None
-        if cloud_configured(cfg):
-            self.cloud = CloudSync(cfg, self.storage, self.tracker)
+        if supa is not None:
+            self.cloud = CloudSync(cfg, self.storage, self.tracker, supa)
             self.tracker.on_status_change = self.cloud.poke
         self._stopped = False
 
@@ -98,7 +105,7 @@ class App:
     def cloud_status(self) -> str:
         if self.cloud:
             return self.cloud.status_text()
-        return "Тохируулаагүй" if not self.cfg["cloud"].get("enabled") else "Тохиргоо дутуу"
+        return "Нэвтрээгүй (зөвхөн энэ компьютерт)"
 
     def stop(self) -> None:
         if self._stopped:

@@ -99,7 +99,8 @@ dialog .body { padding: 14px 18px 18px; overflow-y: auto; }
 
 <!-- Нэвтрэх -->
 <section id="login" class="card center hidden">
-  <h2>Менежер нэвтрэх</h2>
+  <h2>Нэвтрэх</h2>
+  <p class="muted small">Програмд бүртгүүлсэн имэйл, нууц үгээрээ нэвтэрнэ.</p>
   <form id="l-form">
     <div class="field"><label for="l-email">Имэйл</label><input id="l-email" type="email" autocomplete="username" required></div>
     <div class="field"><label for="l-pass">Нууц үг</label><input id="l-pass" type="password" autocomplete="current-password" required></div>
@@ -205,16 +206,50 @@ function dayRange(list) {
 // ------------------------------------------------------------------ өгөгдөл
 let sb = null, state = { devices: [], daily: [], week: [] }, timer = null;
 
+// Хэн юуг харахыг сервер (RLS) шийднэ: ажилтан → өөрийгөө, менежер → хэлтсээ, админ → бүгдийг.
+// Ирсэн өгөгдлийг хүн тус бүрээр нэгтгэнэ (нэг хүн хэд хэдэн компьютер дээр ажилласан байж болно).
 async function fetchData(day) {
   if (DEMO) return demoData(day);
   const d0 = addDays(day, -6);
-  const [dev, daily, week] = await Promise.all([
-    sb.from("wt_devices").select("id,employee,hostname,platform,status,current_app,camera_ok,status_since,last_seen_at"),
-    sb.from("wt_daily").select("device_id,day,employee,work_seconds,away_seconds,first_seen,last_seen,apps,periods").eq("day", day),
-    sb.from("wt_daily").select("device_id,day,work_seconds").gte("day", d0).lte("day", day),
+  const [prof, dept, live, daily, week] = await Promise.all([
+    sb.from("wt_profiles").select("user_id,email,full_name,role,department_id,active"),
+    sb.from("wt_departments").select("id,name"),
+    sb.from("wt_live").select("user_id,hostname,platform,status,current_app,camera_ok,status_since,last_seen_at"),
+    sb.from("wt_daily").select("user_id,hostname,work_seconds,away_seconds,first_seen,last_seen,apps,periods").eq("day", day),
+    sb.from("wt_daily").select("user_id,day,work_seconds").gte("day", d0).lte("day", day),
   ]);
-  for (const r of [dev, daily, week]) if (r.error) throw r.error;
-  return { devices: dev.data, daily: daily.data, week: week.data };
+  for (const r of [prof, dept, live, daily, week]) if (r.error) throw r.error;
+  const deptName = new Map(dept.data.map((d) => [d.id, d.name]));
+  const liveBy = new Map(live.data.map((l) => [l.user_id, l]));
+  const merged = new Map();
+  for (const r of daily.data) {
+    const m = merged.get(r.user_id) || { device_id: r.user_id, day, work_seconds: 0, away_seconds: 0, first_seen: null, last_seen: null, apps: {}, periods: [] };
+    m.work_seconds += r.work_seconds || 0; m.away_seconds += r.away_seconds || 0;
+    if (r.first_seen && (!m.first_seen || r.first_seen < m.first_seen)) m.first_seen = r.first_seen;
+    if (r.last_seen && (!m.last_seen || r.last_seen > m.last_seen)) m.last_seen = r.last_seen;
+    for (const [a, s] of r.apps || []) m.apps[a] = (m.apps[a] || 0) + s;
+    m.periods.push(...(r.periods || []));
+    merged.set(r.user_id, m);
+  }
+  for (const m of merged.values()) {
+    m.apps = Object.entries(m.apps).sort((a, b) => b[1] - a[1]);
+    m.periods.sort((a, b) => (a[1] < b[1] ? -1 : 1));
+  }
+  const devices = prof.data
+    .filter((p) => p.role !== "pending" && (p.active || merged.has(p.user_id)))
+    .map((p) => {
+      const l = liveBy.get(p.user_id) || {};
+      return { id: p.user_id, employee: p.full_name || p.email, department: deptName.get(p.department_id) || "",
+        hostname: l.hostname || "", platform: l.platform || "", status: l.status || "offline", current_app: l.current_app,
+        camera_ok: l.camera_ok, status_since: l.status_since, last_seen_at: l.last_seen_at };
+    });
+  for (const m of merged.values()) m.employee = devices.find((d) => d.id === m.device_id)?.employee || "";
+  const weekSum = new Map();
+  for (const r of week.data) {
+    const k = r.user_id + "|" + r.day;
+    weekSum.set(k, { device_id: r.user_id, day: r.day, work_seconds: (weekSum.get(k)?.work_seconds || 0) + (r.work_seconds || 0) });
+  }
+  return { devices, daily: [...merged.values()], week: [...weekSum.values()] };
 }
 
 async function load() {
@@ -261,7 +296,7 @@ function render(day) {
     const apps = (d.apps || []).slice(0, 3).map(([a, s]) => `${esc(a)} <span class="muted">${fmtDur(s)}</span>`).join(", ");
     const since = p.live !== "offline" ? ago(dev.status_since) : (dev.last_seen_at ? ago(dev.last_seen_at) + " өмнө" : "");
     return `<tr class="click" data-i="${i}">
-      <td><div class="name">${esc(dev.employee || d.employee || "(нэргүй)")}</div><div class="host">${esc(dev.hostname || "")}</div></td>
+      <td><div class="name">${esc(dev.employee || d.employee || "(нэргүй)")}</div><div class="host">${esc([dev.department, dev.hostname].filter(Boolean).join(" · "))}</div></td>
       <td><span class="pill ${p.live}">${STATUS[p.live]}</span> <span class="muted small">${esc(since)}</span></td>
       <td class="hide-sm">${p.live === "offline" ? '<span class="muted">—</span>' : esc(dev.current_app || "—")}</td>
       <td class="num"><b>${fmtDur(d.work_seconds)}</b></td>
@@ -307,7 +342,7 @@ function openDetail(p, day) {
   const aways = (d.periods || []).filter(([st, s, e]) => st === "away" && toSec(e) - toSec(s) >= 60);
   $("d-body").innerHTML = `
     <p><span class="pill ${p.live}">${STATUS[p.live]}</span>
-      <span class="muted small">${esc(dev.hostname || "")} · ${esc(dev.platform || "")} · камер: ${dev.camera_ok === false ? "олдсонгүй" : dev.camera_ok ? "OK" : "—"} · сүүлд холбогдсон: ${dev.last_seen_at ? esc(ago(dev.last_seen_at)) + " өмнө" : "—"}</span></p>
+      <span class="muted small">${esc([dev.department, dev.hostname, dev.platform].filter(Boolean).join(" · "))} · камер: ${dev.camera_ok === false ? "олдсонгүй" : dev.camera_ok ? "OK" : "—"} · сүүлд холбогдсон: ${dev.last_seen_at ? esc(ago(dev.last_seen_at)) + " өмнө" : "—"}</span></p>
     <div class="kpis">
       <div class="card kpi work"><div class="k">Ажилласан</div><div class="v">${fmtDur(d.work_seconds)}</div></div>
       <div class="card kpi away"><div class="k">Гарсан</div><div class="v">${fmtDur(d.away_seconds)}</div></div>
@@ -321,15 +356,7 @@ function openDetail(p, day) {
       <td class="num muted">${((s / totalApps) * 100).toFixed(0)}%</td></tr>`).join("") || '<tr><td class="muted">Мэдээлэл алга</td></tr>'}</table>
     <h2>Ажлаас гарсан үеүд <span class="muted small">(≥ 1 мин)</span></h2>
     <table>${aways.map(([, s, e]) => `<tr><td>${esc(s.slice(0, 5))} – ${esc(e.slice(0, 5))}</td><td class="num">${fmtDur(toSec(e) - toSec(s))}</td></tr>`).join("") || '<tr><td class="muted">Байхгүй</td></tr>'}</table>
-    ${dev.id && !DEMO ? `<p style="margin-top:20px"><button class="btn danger" id="d-del">Төхөөрөмжийг устгах</button>
-      <span class="muted small">Ажлаас гарсан ажилтных. Бүх түүх устна.</span></p>` : ""}`;
-  const del = $("d-del");
-  if (del) del.onclick = async () => {
-    if (!confirm(`"${dev.employee}" (${dev.hostname})-ийн бүх мэдээллийг устгах уу?`)) return;
-    const { error } = await sb.from("wt_devices").delete().eq("id", dev.id);
-    if (error) return alert(error.message);
-    $("detail").close(); load();
-  };
+    <p class="muted small" style="margin-top:20px">Хэрэглэгч, хэлтэс, эрхийг програмын "Самбар → Хэрэглэгчид" хэсгээс админ удирдана.</p>`;
   $("detail").showModal();
 }
 
@@ -362,15 +389,17 @@ async function startApp(email) {
 }
 
 async function afterLogin(session) {
-  const { data: ok, error } = await sb.rpc("wt_is_manager");
-  if (error || !ok) {
+  const { data, error } = await sb.from("wt_profiles").select("role,active,full_name").eq("user_id", session.user.id);
+  const me = data && data[0];
+  if (error || !me || me.role === "pending" || !me.active) {
     await sb.auth.signOut();
     show("login");
     $("l-err").textContent = error ? error.message
-      : `"${session.user.email}" менежерийн жагсаалтад алга.\nSupabase SQL Editor дээр:\ninsert into wt_managers(email) values ('${session.user.email}');`;
+      : !me ? "Профайл олдсонгүй" : !me.active ? "Таны эрх хаагдсан байна" : "Админ таны бүртгэлийг баталгаажуулаагүй байна";
     return;
   }
-  startApp(session.user.email);
+  const roles = { employee: "Ажилтан", manager: "Менежер", admin: "Админ" };
+  startApp(`${me.full_name || session.user.email} · ${roles[me.role] || ""}`);
 }
 
 async function init() {
@@ -436,7 +465,7 @@ function demoData(day) {
       first_seen: periods[0]?.[1], last_seen: periods.at(-1)?.[2], apps, periods });
     const last = periods.at(-1) || ["offline"];
     const off = !isToday || i === 5 || nowSec > end + 600;
-    devices.push({ id, employee: emp, hostname: host, platform: plat, camera_ok: i !== 3,
+    devices.push({ id, employee: emp, department: i < 3 ? "Борлуулалт" : "Нягтлан", hostname: host, platform: plat, camera_ok: i !== 3,
       status: off ? "offline" : last[0], current_app: apps[Math.floor(rnd() * 2)][0],
       status_since: new Date(Date.now() - (60 + rnd() * 1500) * 1000).toISOString(),
       last_seen_at: (off ? new Date(`${day}T${hms(end)}`) : new Date(Date.now() - 20e3)).toISOString() });

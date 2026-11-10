@@ -48,15 +48,16 @@ DEFAULTS: dict = {
         "bot_token": "",
         "chat_id": "",
     },
-    # Сервергүй вэб самбар (Supabase). README → "Вэб самбар" хэсгийг үз.
+    # Supabase сервер. Ихэвчлэн server.json-оор програмд багцлагдана (README үз).
     "cloud": {
-        "enabled": False,
         "supabase_url": "",
         "supabase_key": "",
-        "company_key": "",
         "push_interval_sec": 60,
     },
 }
+
+# Админ самбараас өөрчилж болох компанийн тохиргоо (wt_company.settings)
+COMPANY_KEYS = ("away_grace_sec", "input_counts_as_presence", "min_away_period_min", "report_time")
 
 
 def is_frozen() -> bool:
@@ -97,6 +98,40 @@ def data_dir() -> Path:
 
 def reports_dir() -> Path:
     d = data_dir() / "reports"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def load_server(cfg: dict) -> tuple[str, str] | None:
+    """Supabase URL + publishable key.  Дараалал: энэ компьютерт тохируулсан →
+    програмд багцалсан server.json → config.json-ийн cloud хэсэг."""
+    for path in (data_dir() / "server.json", resource_path("server.json")):
+        try:
+            d = _read_json(path)
+        except (OSError, ValueError):
+            continue
+        if d.get("supabase_url") and d.get("supabase_key"):
+            return str(d["supabase_url"]).strip(), str(d["supabase_key"]).strip()
+    c = cfg.get("cloud", {})
+    if c.get("supabase_url") and c.get("supabase_key"):
+        return str(c["supabase_url"]).strip(), str(c["supabase_key"]).strip()
+    return None
+
+
+def save_server(url: str, key: str) -> None:
+    _write_json(data_dir() / "server.json", {"supabase_url": url.strip().rstrip("/"), "supabase_key": key.strip()})
+
+
+def clear_server() -> None:
+    try:
+        (data_dir() / "server.json").unlink()
+    except FileNotFoundError:
+        pass
+
+
+def user_data_dir(user_id: str) -> Path:
+    """Хэрэглэгч бүрийн өгөгдөл тусдаа (нэг компьютерийг хэд хэдэн хүн ашиглаж болно)."""
+    d = data_dir() / "users" / user_id
     d.mkdir(parents=True, exist_ok=True)
     return d
 

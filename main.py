@@ -1,21 +1,37 @@
 """Ажлын бүтээмж — эхлүүлэх файл.
 
-    python main.py                 # цонхтой ажиллуулах
+    python main.py                 # цонхтой ажиллуулах (нэвтрэх → цаг бүртгэл, самбар)
     python main.py --no-gui        # цонхгүй (терминал дээр)
     python main.py --camera-test   # камер, царай илрүүлэлтийг шалгах
+    python main.py --selftest      # камер нээхгүйгээр бүх модулийг шалгах
     python main.py --report [YYYY-MM-DD]   # тайлан үүсгэж нээх
-    python main.py --send   [YYYY-MM-DD]   # тайланг менежерт илгээх
+    python main.py --send   [YYYY-MM-DD]   # тайланг имэйл/Telegram-аар илгээх
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import webbrowser
 from datetime import date
 
 from worktracker import APP_TITLE, __version__
-from worktracker.config import data_dir, load_config
+from worktracker.config import data_dir, load_config, load_server
 from worktracker.system import enable_hidpi, ensure_single_instance, set_autostart, setup_logging
+
+
+def _saved_user_id() -> str | None:
+    try:
+        return json.loads((data_dir() / "session.json").read_text(encoding="utf-8"))["user"]["id"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _make_client(cfg):
+    from worktracker.supa import SupaClient
+
+    server = load_server(cfg)
+    return SupaClient(server[0], server[1], data_dir() / "session.json") if server else None
 
 
 def selftest(cfg, log_path) -> int:
@@ -25,6 +41,7 @@ def selftest(cfg, log_path) -> int:
 
     from worktracker import activity
     from worktracker.presence import FaceDetector
+    from worktracker.supa import ROLE_TEXT
 
     ok = True
     lines = [f"{APP_TITLE} {__version__} — {platform.system()} {platform.release()}"]
@@ -39,25 +56,25 @@ def selftest(cfg, log_path) -> int:
         except Exception as exc:  # noqa: BLE001
             ok = False
             lines.append(f"  {name:<16}: АЛДАА {exc!r}")
-    from worktracker.cloud import CloudSync, cloud_configured
-    from worktracker.storage import Storage
 
-    if cloud_configured(cfg):
+    server = load_server(cfg)
+    lines.append(f"  Сервер          : {server[0] if server else 'тохируулаагүй'}")
+    supa = _make_client(cfg)
+    if supa and _saved_user_id():
         try:
-            sync = CloudSync(cfg, Storage(data_dir() / "worktime.db"), tracker=None)
-            sync._push_day(date.today().isoformat(), live=False)
-            lines.append(f"  Вэб самбар      : OK ({cfg['cloud']['supabase_url']})")
+            if supa.restore():
+                prof = supa.fetch_profile() or {}
+                lines.append(f"  Нэвтэрсэн       : {supa.email} ({ROLE_TEXT.get(prof.get('role'), '?')})")
+            else:
+                lines.append("  Нэвтэрсэн       : үгүй (хадгалсан нэвтрэлт хүчингүй)")
         except Exception as exc:  # noqa: BLE001
             ok = False
-            lines.append(f"  Вэб самбар      : АЛДАА {exc}")
+            lines.append(f"  Нэвтэрсэн       : АЛДАА {getattr(exc, 'friendly', exc)}")
     else:
-        lines.append("  Вэб самбар      : тохируулаагүй")
+        lines.append("  Нэвтэрсэн       : үгүй")
     lines += [
-        f"  Менежерийн тохир: {cfg.manager_path or '- (байхгүй)'}",
-        f"  Ажилтны тохирг. : {cfg.path}",
-        f"  Ажилтан         : {cfg['employee_name'] or '-'}",
-        f"  Тайлан илгээх   : имэйл={cfg['email']['enabled']}, Telegram={cfg['telegram']['enabled']}, "
-        f"цаг={cfg['report_time']}",
+        f"  Тайлан илгээх   : имэйл={cfg['email']['enabled']}, Telegram={cfg['telegram']['enabled']}",
+        f"  Тохиргоо        : {cfg.manager_path or cfg.path}",
         f"  Өгөгдөл         : {data_dir()}",
         f"  Лог             : {log_path}",
     ]
@@ -67,6 +84,31 @@ def selftest(cfg, log_path) -> int:
     else:  # цонхтой .exe: консол байхгүй тул лог файлд бичнэ
         logging.getLogger("selftest").info("\n%s", text)
     return 0 if ok else 1
+
+
+def run_headless(cfg) -> int:
+    import getpass
+
+    from worktracker.app import App
+    from worktracker.supa import NetworkError
+
+    supa = _make_client(cfg)
+    if supa is None:
+        print("Сервер тохируулаагүй (server.json). Цонхтой горимоор нэг удаа нээж тохируулна уу.")
+        return 1
+    if not supa.restore():
+        email = input("Имэйл: ").strip()
+        supa.sign_in(email, getpass.getpass("Нууц үг: "))
+    try:
+        profile = supa.fetch_profile()
+    except NetworkError:
+        profile = supa.cached_profile
+    if not profile or profile.get("role") == "pending" or not profile.get("active", True):
+        print("Таны эрх баталгаажаагүй эсвэл хаагдсан байна. Админтай холбогдоно уу.")
+        return 1
+    cfg["employee_name"] = profile.get("full_name") or profile.get("email")
+    App(cfg, supa=supa, profile=profile).run_headless()
+    return 0
 
 
 def main() -> int:
@@ -92,11 +134,12 @@ def main() -> int:
         return selftest(cfg, log_path)
 
     if args.report or args.send:
+        from worktracker.app import storage_path
         from worktracker.notify import send_report
         from worktracker.report import build_report, save_report
         from worktracker.storage import Storage
 
-        storage = Storage(data_dir() / "worktime.db")
+        storage = Storage(storage_path(_saved_user_id()))
         day = args.send or args.report
         if args.send:
             ok, msg = send_report(cfg, storage, day)
@@ -125,17 +168,11 @@ def main() -> int:
     print(f"Тохиргоо: {cfg.manager_path or cfg.path}\nЛог:      {log_path}")
 
     if args.no_gui:
-        from worktracker.app import App
+        return run_headless(cfg)
+    enable_hidpi()
+    from worktracker.gui import run_gui
 
-        if not cfg["employee_name"]:
-            cfg["employee_name"] = input("Таны нэр: ").strip()
-            cfg.save()
-        App(cfg).run_headless()
-    else:
-        enable_hidpi()
-        from worktracker.gui import run_gui
-
-        run_gui(cfg)
+    run_gui(cfg)
     return 0
 
 
