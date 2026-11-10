@@ -1,11 +1,15 @@
-# Windows (.exe) болон macOS (.app)-г GitHub дээр автоматаар бүтээнэ.
-# GitHub -> Actions -> "build" -> "Run workflow" дарахад бүтээгээд Artifacts хэсэгт гаргана.
+# Windows (.exe) болон macOS (.app)-г GitHub дээр бүтээнэ.
+# - "Run workflow" (гараар): бүтээгээд Artifacts хэсэгт гаргана.
+# - v* tag push: мөн GitHub Release үүсгэнэ → програмууд автоматаар шинэчлэгдэнэ.
 name: build
 
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -29,19 +33,21 @@ jobs:
       - name: Build
         run: pyinstaller AjliinButeemj.spec --noconfirm
 
-      - name: Self-test (Windows)
+      - name: Self-test + checksum (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $p = Start-Process dist\AjliinButeemj.exe -ArgumentList "--selftest" -Wait -PassThru
           Get-Content "$env:APPDATA\AjliinButeemj\app.log"
-          exit $p.ExitCode
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          (Get-FileHash dist\AjliinButeemj.exe -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii -NoNewline dist\AjliinButeemj.exe.sha256
 
-      - name: Self-test (macOS) + zip
+      - name: Self-test + zip + checksum (macOS)
         if: runner.os == 'macOS'
         run: |
           dist/AjliinButeemj.app/Contents/MacOS/AjliinButeemj --selftest
           ditto -c -k --keepParent dist/AjliinButeemj.app dist/AjliinButeemj-mac.zip
+          shasum -a 256 dist/AjliinButeemj-mac.zip | cut -d' ' -f1 | tr -d '\n' > dist/AjliinButeemj-mac.zip.sha256
 
       - uses: actions/upload-artifact@v4
         with:
@@ -49,5 +55,15 @@ jobs:
           path: |
             dist/AjliinButeemj.exe
             dist/AjliinButeemj-mac.zip
-            config.example.json
           if-no-files-found: ignore
+
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/AjliinButeemj.exe
+            dist/AjliinButeemj.exe.sha256
+            dist/AjliinButeemj-mac.zip
+            dist/AjliinButeemj-mac.zip.sha256
+          fail_on_unmatched_files: false

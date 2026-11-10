@@ -2,5 +2,7 @@ opencv-python>=4.8
 psutil>=5.9
 certifi>=2024.2.2
 pywin32>=306; sys_platform == "win32"
+pystray>=0.19; sys_platform == "win32"
+Pillow>=10.0; sys_platform == "win32"
 pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
 pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"

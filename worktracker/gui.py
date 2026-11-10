@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import logging
+import sys
+import threading
+import time
 import tkinter as tk
 import webbrowser
 from datetime import date
 from tkinter import messagebox, simpledialog
 
-from . import APP_TITLE
+from . import APP_TITLE, updater
 from .app import App
 from .login import AuthScreen
 from .notify import channels_enabled
@@ -18,6 +21,69 @@ from .uiutil import BG, FG, FONT, GREEN, MUTED, RED, Bg, button, clear, fmt_dur,
 
 log = logging.getLogger(__name__)
 TOP_N = 6
+CAMERA_WARN = {"blocked": "⚠ Камер таглагдсан байна", "static": "⚠ Хөдөлгөөнгүй царай (зураг?)"}
+
+
+class Tray:
+    """Цонх хаахад програм арын горимд үргэлжилнэ.
+    Windows: системийн tray дүрс (pystray).  macOS: Dock дүрс дээр дарж нээнэ, ⌘Q бүрэн хаана."""
+
+    COLORS = {"working": (26, 127, 55), "away": (207, 34, 46), "offline": (140, 149, 159)}
+
+    def __init__(self, root: tk.Tk, bg: Bg, on_show, on_quit):
+        self.icon = None
+        self._status = None
+        if sys.platform == "win32":
+            try:
+                import pystray
+
+                menu = pystray.Menu(pystray.MenuItem("Нээх", lambda: bg.call_soon(on_show), default=True),
+                                    pystray.MenuItem("Програмыг хаах", lambda: bg.call_soon(on_quit)))
+                self.icon = pystray.Icon("AjliinButeemj", self._image("offline"), APP_TITLE, menu)
+                threading.Thread(target=self.icon.run, name="tray", daemon=True).start()
+            except Exception:  # noqa: BLE001
+                log.exception("Tray дүрс үүсгэж чадсангүй")
+                self.icon = None
+        elif sys.platform == "darwin":
+            root.createcommand("tk::mac::ReopenApplication", on_show)
+            root.createcommand("tk::mac::Quit", lambda: on_quit(confirm=False))
+
+    @property
+    def available(self) -> bool:
+        return self.icon is not None or sys.platform == "darwin"
+
+    def _image(self, status):
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.ellipse((4, 4, 60, 60), fill=self.COLORS.get(status, self.COLORS["offline"]) + (255,))
+        d.ellipse((22, 22, 42, 42), fill=(255, 255, 255, 255))
+        return img
+
+    def set_status(self, status: str, text: str) -> None:
+        if self.icon is None or status == self._status:
+            return
+        self._status = status
+        try:
+            self.icon.icon = self._image(status)
+            self.icon.title = f"{APP_TITLE} — {text}"
+        except Exception:  # noqa: BLE001
+            pass
+
+    def notify(self, text: str) -> None:
+        if self.icon is not None:
+            try:
+                self.icon.notify(text, APP_TITLE)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def stop(self) -> None:
+        if self.icon is not None:
+            try:
+                self.icon.stop()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _hms(sec: float) -> str:
@@ -26,17 +92,21 @@ def _hms(sec: float) -> str:
 
 
 class MainWindow:
-    def __init__(self, root: tk.Tk, app: App, bg: Bg, on_logout):
+    def __init__(self, root: tk.Tk, app: App, bg: Bg, on_logout, tray: Tray | None = None, on_quit=None):
         self.root, self.app, self.bg, self.on_logout = root, app, bg, on_logout
+        self.tray, self.on_quit = tray, on_quit
         self.dashboard = None
         self._job = None
+        self._hidden_once = False
+        self._update_info = None
+        self._last_update_check = time.monotonic()  # эхлэхэд run_gui шалгасан
         clear(root)
         root.title(APP_TITLE)
         root.configure(bg=BG)
         root.resizable(False, False)
         if app.cfg.get("always_on_top"):
             root.attributes("-topmost", True)
-        root.protocol("WM_DELETE_WINDOW", self.on_close)
+        root.protocol("WM_DELETE_WINDOW", self.hide if tray and tray.available else self.on_close)
 
         # --- төлөвийн самбар
         self.banner = tk.Frame(root, bg=GREEN, padx=16, pady=14)
@@ -97,6 +167,7 @@ class MainWindow:
                             cursor="hand2")
             link.pack(side="right", padx=16)
             link.bind("<Button-1>", lambda _: self.change_password())
+        self.update_btn = button(root, "", self.install_update, primary=True)
         self.refresh()
 
     def refresh(self) -> None:
@@ -112,7 +183,16 @@ class MainWindow:
             cam = "Олдсонгүй (гар/хулганаар шалгана)"
         else:
             cam = "Холбогдсон · " + ("царай харагдаж байна" if s["face_visible"] else "царай харагдахгүй")
-        self.rows["cam"].config(text=cam)
+        if s.get("camera_state") in CAMERA_WARN:
+            cam = CAMERA_WARN[s["camera_state"]]
+        self.rows["cam"].config(text=cam, fg="#bc4c00" if s.get("camera_state") in CAMERA_WARN else FG)
+        if self.tray:
+            self.tray.set_status(s["status"], s["status_text"])
+        if updater.supported() and self.app.cfg.get("auto_update", True) and \
+                time.monotonic() - self._last_update_check > updater.CHECK_EVERY_SEC:
+            self._last_update_check = time.monotonic()
+            self.bg.run(lambda: updater.check(self.app.cfg.get("update_repo") or updater.DEFAULT_REPO),
+                        self._update_found, lambda e: log.info("Шинэчлэл шалгаж чадсангүй: %s", e))
         self.rows["cloud"].config(text=self.app.cloud_status())
         for i, (a, b) in enumerate(self.app_rows):
             if i < len(s["top_apps"]):
@@ -123,6 +203,60 @@ class MainWindow:
                 a.config(text="")
                 b.config(text="")
         self._job = self.root.after(1000, self.refresh)
+
+    def _update_found(self, info) -> None:
+        if not info:
+            return
+        self._update_info = info
+        self.update_btn.config(text=f"⬇ Шинэ хувилбар {info['version']} — Шинэчлэх")
+        self.update_btn.pack(fill="x", padx=16, pady=(0, 8))
+        if self.tray:
+            self.tray.notify(f"Шинэ хувилбар {info['version']} бэлэн боллоо")
+
+    def install_update(self) -> None:
+        info = self._update_info
+        if not info or not messagebox.askokcancel(
+                APP_TITLE, f"{info['version']} хувилбар руу шинэчлэх үү?\nПрограм хаагдаад дахин нээгдэнэ.",
+                parent=self.root):
+            return
+        self.update_btn.config(text="Татаж байна…", state="disabled")
+
+        def progress(done, total):
+            if total:
+                self.bg.call_soon(lambda: self.update_btn.config(text=f"Татаж байна… {done * 100 // total}%"))
+
+        def work():
+            path = updater.download(info, progress)
+            return path
+
+        def ready(path):
+            self._teardown()
+            self.app.stop()
+            from .system import release_single_instance
+
+            release_single_instance()
+            try:
+                updater.apply(path)
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror(APP_TITLE, f"Шинэчилж чадсангүй: {exc}", parent=self.root)
+            if self.tray:
+                self.tray.stop()
+            self.root.destroy()
+
+        self.bg.run(work, ready, lambda e: (self.update_btn.config(text=f"Татаж чадсангүй: {friendly(e)[:40]}",
+                                                                   state="normal")))
+
+    def hide(self) -> None:
+        """Цонхыг нууна — цаг бүртгэл үргэлжилнэ."""
+        if not self._hidden_once:
+            self._hidden_once = True
+            if sys.platform == "win32":
+                self.tray.notify("Програм арын горимд ажилласаар байна. Tray дүрс дээр дарж нээнэ.")
+            else:
+                messagebox.showinfo(APP_TITLE, "Цонх нуугдлаа, цаг бүртгэл үргэлжилж байна.\n"
+                                               "Dock дээрх дүрсэн дээр дарж дахин нээнэ. Бүрэн хаах бол ⌘Q.",
+                                    parent=self.root)
+        self.root.withdraw()
 
     def open_dashboard(self) -> None:
         from .dashboard import Dashboard
@@ -174,27 +308,88 @@ class MainWindow:
         self._teardown()
         self.on_logout()
 
-    def on_close(self) -> None:
-        if messagebox.askokcancel(APP_TITLE, "Програмыг хаавал цаг бүртгэл зогсоно.\nХаах уу?", parent=self.root):
-            self._teardown()
-            self.app.stop()
-            self.root.destroy()
+    def on_close(self, confirm: bool = True) -> None:
+        if confirm and not messagebox.askokcancel(APP_TITLE, "Програмыг хаавал цаг бүртгэл зогсоно.\nХаах уу?",
+                                                  parent=self.root):
+            return
+        self._teardown()
+        self.app.stop()
+        if self.tray:
+            self.tray.stop()
+        self.root.destroy()
 
 
-def run_gui(cfg) -> None:
+def _startup_update(auth: AuthScreen, bg: Bg, root: tk.Tk, tray: Tray, cfg) -> None:
+    """Эхлэхэд шинэ хувилбар байвал татаж суулгана. Алдаа/интернэтгүй бол шууд нэвтрэх рүү."""
+    auth._busy("Шинэчлэл шалгаж байна…")
+
+    def found(info):
+        if not info:
+            return auth.start()
+        f = auth._frame(f"Шинэ хувилбар {info['version']}", "Татаж суулгаад програм дахин нээгдэнэ.")
+        lbl = tk.Label(f, text="Татаж байна…", font=(FONT, 12), fg=FG, bg=BG)
+        lbl.pack(anchor="w")
+
+        def progress(done, total):
+            if total:
+                bg.call_soon(lambda: lbl.winfo_exists() and lbl.config(text=f"Татаж байна… {done * 100 // total}%"))
+
+        def ready(path):
+            from .system import release_single_instance
+
+            release_single_instance()
+            try:
+                updater.apply(path)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Шинэчлэл суулгаж чадсангүй")
+                messagebox.showerror(APP_TITLE, f"Шинэчилж чадсангүй: {exc}")
+                return auth.start()
+            tray.stop()
+            root.destroy()
+
+        bg.run(lambda: updater.download(info, progress), ready,
+               lambda e: (log.warning("Шинэчлэл татаж чадсангүй: %s", e), auth.start()))
+
+    bg.run(lambda: updater.check(cfg.get("update_repo") or updater.DEFAULT_REPO), found,
+           lambda e: (log.info("Шинэчлэл шалгаж чадсангүй: %s", e), auth.start()))
+
+
+def run_gui(cfg, updated: bool = False) -> None:
+    from .system import start_instance_listener
+
     root = tk.Tk()
     root.configure(bg=BG)
     bg = Bg(root)
     state: dict = {}
+
+    def show() -> None:
+        root.deiconify()
+        root.lift()
+        try:
+            root.focus_force()
+        except tk.TclError:
+            pass
+
+    def quit_app(confirm: bool = True) -> None:
+        main = state.get("main")
+        if main is not None:
+            main.on_close(confirm=confirm)
+        else:
+            tray.stop()
+            root.destroy()
+
+    tray = Tray(root, bg, show, quit_app)
+    start_instance_listener(lambda: bg.call_soon(show))
 
     def on_ready(supa: SupaClient, profile: dict) -> None:
         cfg["employee_name"] = profile.get("full_name") or profile.get("email") or ""
         app = App(cfg, supa=supa, profile=profile)
         app.start()  # main thread дээр (macOS камерын зөвшөөрөл)
         state["app"] = app
-        MainWindow(root, app, bg, on_logout)
+        state["main"] = MainWindow(root, app, bg, on_logout, tray, quit_app)
 
     def on_logout() -> None:
+        state.pop("main", None)
         app: App = state.pop("app")
         root.protocol("WM_DELETE_WINDOW", on_close_auth)
         auth._busy("Гарч байна…")
@@ -208,13 +403,19 @@ def run_gui(cfg) -> None:
     def on_close_auth() -> None:
         if "app" in state:  # MainWindow өөрийн handler-тэй
             return
+        tray.stop()
         root.destroy()
 
     auth = AuthScreen(root, cfg, bg, on_ready)
     root.protocol("WM_DELETE_WINDOW", on_close_auth)
-    auth.start()
+    updater.cleanup()
+    if updater.supported() and cfg.get("auto_update", True) and not updated:
+        _startup_update(auth, bg, root, tray, cfg)
+    else:
+        auth.start()
     try:
         root.mainloop()
     finally:
         if "app" in state:
             state["app"].stop()
+        tray.stop()

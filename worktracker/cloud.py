@@ -141,10 +141,12 @@ class CloudSync:
             "p_last_seen": d["last_seen"],
             "p_apps": [[a, int(s)] for a, s in d["apps"][:MAX_APPS]],
             "p_periods": [[p["status"], p["start"], p["end"]] for p in merge_periods(d["periods"])][-300:],
+            "p_flags": [[f["kind"], f["start"], f["end"]] for f in d.get("flags", [])][-200:],
             "p_live": live,
         }
         if live:
             params["p_status"] = status or (snap["status"] if snap else "working")
             params["p_current_app"] = snap["app"] if snap else None
             params["p_camera_ok"] = snap["camera_ok"] if snap else None
+            params["p_camera_state"] = snap.get("camera_state") if snap else None
         self.supa.rpc("wt_push", params, timeout=timeout)

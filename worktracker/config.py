@@ -33,6 +33,9 @@ DEFAULTS: dict = {
     "autostart": True,
     # Цонхыг үргэлж бусад цонхны дээр харуулах
     "always_on_top": False,
+    # GitHub Releases-ээс автоматаар шинэчлэх (.exe / .app хувилбарт)
+    "auto_update": True,
+    "update_repo": "",
     "email": {
         "enabled": False,
         "smtp_host": "smtp.gmail.com",
@@ -57,7 +60,8 @@ DEFAULTS: dict = {
 }
 
 # Админ самбараас өөрчилж болох компанийн тохиргоо (wt_company.settings)
-COMPANY_KEYS = ("away_grace_sec", "input_counts_as_presence", "min_away_period_min", "report_time")
+COMPANY_KEYS = ("away_grace_sec", "input_counts_as_presence", "min_away_period_min", "report_time",
+                "liveness_enabled", "liveness_static_sec", "camera_blocked_sec")
 
 
 def is_frozen() -> bool:

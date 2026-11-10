@@ -40,6 +40,10 @@ class Bg:
         self._q: queue.Queue = queue.Queue()
         self._poll()
 
+    def call_soon(self, fn) -> None:
+        """Өөр thread-ээс (tray, socket) main thread дээр fn() дуудуулна."""
+        self._q.put((lambda _: fn(), None))
+
     def run(self, fn, done=None, fail=None) -> None:
         def work():
             try:

@@ -129,6 +129,8 @@ class AuthScreen:
         links.pack(anchor="w", pady=(14, 0))
         self._link(links, "Нэвтрэх" if register else "Шинээр бүртгүүлэх",
                    lambda: self.show_login("login" if register else "register"))
+        if not register:
+            self._link(links, "Нууц үг мартсан?", lambda: self.show_forgot(email.get().strip()))
         server = load_server(self.cfg)
         host = server[0].replace("https://", "") if server else ""
         tk.Label(f, text=f"Сервер: {host}", font=(FONT, 10), fg=MUTED, bg=BG).pack(anchor="w", pady=(10, 0))
@@ -136,6 +138,59 @@ class AuthScreen:
         for w in (email, pw) + ((pw2,) if register else ()):
             w.bind("<Return>", submit)
         (name or email).focus_set()
+
+    # ------------------------------------------------------------------ нууц үг сэргээх
+    def show_forgot(self, prefill: str = "", message: str = "") -> None:
+        f = self._frame("Нууц үг сэргээх", "Имэйл рүү тань 6 оронтой код илгээнэ. "
+                                           "Имэйл ирэхгүй бол админд хандаж түр нууц үг авна уу.")
+        email = self._field(f, "Имэйл")
+        email.insert(0, prefill)
+        err = tk.Label(f, text=message, font=(FONT, 11), fg=RED, bg=BG, wraplength=320, justify="left")
+
+        def send(_=None):
+            e = email.get().strip()
+            if "@" not in e:
+                return err.config(text="Имэйлээ зөв оруулна уу")
+            btn.config(state="disabled")
+            self.bg.run(lambda: self.supa.request_recovery(e), lambda _: self.show_reset(e),
+                        lambda exc: (btn.config(state="normal"), err.config(text=friendly(exc))))
+
+        btn = button(f, "Код илгээх", send, primary=True)
+        btn.pack(anchor="w")
+        err.pack(anchor="w", pady=(8, 0))
+        self._link(f, "← Нэвтрэх", self.show_login, small=True)
+        email.bind("<Return>", send)
+        email.focus_set()
+
+    def show_reset(self, email_addr: str) -> None:
+        f = self._frame("Шинэ нууц үг", f"{email_addr} хаяг руу илгээсэн кодыг оруулна уу.")
+        code = self._field(f, "Код")
+        pw = self._field(f, "Шинэ нууц үг", show="•")
+        pw2 = self._field(f, "Шинэ нууц үг давтах", show="•")
+        err = tk.Label(f, text="", font=(FONT, 11), fg=RED, bg=BG, wraplength=320, justify="left")
+
+        def submit(_=None):
+            c, p = code.get().strip(), pw.get()
+            if not c or len(p) < 6:
+                return err.config(text="Код болон 6+ тэмдэгттэй нууц үгээ оруулна уу")
+            if p != pw2.get():
+                return err.config(text="Нууц үг таарахгүй байна")
+            btn.config(state="disabled")
+
+            def work():
+                self.supa.verify_recovery(email_addr, c)
+                self.supa.update_password(p)
+
+            self.bg.run(work, lambda _: self.check_profile(),
+                        lambda exc: (btn.config(state="normal"), err.config(text=friendly(exc))))
+
+        btn = button(f, "Нууц үг солих", submit, primary=True)
+        btn.pack(anchor="w")
+        err.pack(anchor="w", pady=(8, 0))
+        self._link(f, "Код дахин илгээх", lambda: self.show_forgot(email_addr), small=True)
+        for w in (code, pw, pw2):
+            w.bind("<Return>", submit)
+        code.focus_set()
 
     def _link(self, parent, text, command, small=False):
         lbl = tk.Label(parent, text=text, font=(FONT, 10 if small else 11, "underline"), fg="#0969da", bg=BG,

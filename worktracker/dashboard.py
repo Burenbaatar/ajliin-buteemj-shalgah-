@@ -7,7 +7,7 @@ from __future__ import annotations
 import csv
 import tkinter as tk
 from datetime import date, datetime, timedelta
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import APP_TITLE
 from . import dashdata as dd
@@ -17,8 +17,12 @@ from .uiutil import (BG, BORDER, FG, FONT, GAP, GREEN, MUTED, PENDING_BG, RED, S
 
 REFRESH_MS = 30000
 ROW_H = 44
-COLS = [("Ажилтан", 210), ("Одоо", 180), ("Одоогийн апп", 170), ("Ажилласан", 90), ("Гарсан", 80),
-        ("Ирсэн – Явсан", 110), ("Өдрийн явц", 250)]
+COLS = [("Ажилтан", 200), ("Одоо", 175), ("Одоогийн апп", 150), ("Ажилласан", 85), ("Гарсан", 75),
+        ("Ирсэн – Явсан", 105), ("Хоцорсон", 80), ("Бүтээмж", 75), ("Өдрийн явц", 240)]
+ORANGE = "#bc4c00"
+LUNCH = "#d8dee4"
+CAT_COLOR = {"productive": "#1a7f37", "unproductive": "#cf222e", "neutral": "#8c959f"}
+CAT_TEXT = {"productive": "бүтээмжтэй", "unproductive": "бүтээмжгүй", "neutral": "бусад"}
 WEEKDAYS = ["Да", "Мя", "Лх", "Пү", "Ба", "Бя", "Ня"]
 ROLE_BY_TEXT = {v: k for k, v in ROLE_TEXT.items()}
 
@@ -29,17 +33,33 @@ def _mix(hex_a: str, hex_b: str, t: float) -> str:
     return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(a, b))
 
 
-def draw_timeline(cv: tk.Canvas, x: int, y: int, w: int, h: int, periods, rng) -> None:
+def draw_timeline(cv: tk.Canvas, x: int, y: int, w: int, h: int, periods, rng, settings=None, flags=None,
+                  tags=()) -> None:
+    """Өдрийн явц: ногоон = ажилласан, улаан = гарсан, саарал = програм ажиллаагүй.
+    Цайны цаг цайвар, ажлын цагийн эхлэл/төгсгөл босоо зураас, сэжигтэй үе дээрээ улбар шар."""
     a, b = rng
     span = max(1, b - a)
-    cv.create_rectangle(x, y, x + w, y + h, fill=GAP, outline="")
-    for st, s, e in periods or []:
+    X = lambda sec: x + (min(b, max(a, sec)) - a) / span * w  # noqa: E731
+    cv.create_rectangle(x, y, x + w, y + h, fill=GAP, outline="", tags=tags)
+    s = settings or {}
+    ls, le = dd.hm_sec(s.get("lunch_start")), dd.hm_sec(s.get("lunch_end"))
+    if ls and le:
+        cv.create_rectangle(X(ls), y, X(le), y + h, fill=LUNCH, outline="", tags=tags)
+    for st, p0, p1 in periods or []:
         if st not in ("working", "away"):
             continue
-        x0 = x + (max(a, dd.to_sec(s)) - a) / span * w
-        x1 = x + (min(b, dd.to_sec(e)) - a) / span * w
+        x0, x1 = X(dd.to_sec(p0)), X(dd.to_sec(p1))
         if x1 > x0:
-            cv.create_rectangle(x0, y, max(x1, x0 + 1), y + h, fill=GREEN if st == "working" else RED, outline="")
+            cv.create_rectangle(x0, y, max(x1, x0 + 1), y + h, fill=GREEN if st == "working" else RED, outline="",
+                                tags=tags)
+    for _kind, f0, f1 in flags or []:
+        x0, x1 = X(dd.to_sec(f0)), X(dd.to_sec(f1))
+        if x1 > x0:
+            cv.create_rectangle(x0, y - 3, max(x1, x0 + 2), y + 1, fill=ORANGE, outline="", tags=tags)
+    for key in ("work_start", "work_end"):
+        sec = dd.hm_sec(s.get(key))
+        if sec is not None and a <= sec <= b:
+            cv.create_line(X(sec), y - 2, X(sec), y + h + 2, fill=FG, width=1, tags=tags)
 
 
 class Dashboard(tk.Toplevel):
@@ -173,7 +193,8 @@ class Dashboard(tk.Toplevel):
         bind_wheel(self.day_body, self.day_body)
         legend = tk.Frame(tab, bg=BG)
         legend.pack(fill="x", padx=6, pady=(0, 4))
-        for color, text in ((GREEN, "Ажилласан"), (RED, "Гарсан"), (GAP, "Компьютер унтраалттай / програм хаалттай")):
+        for color, text in ((GREEN, "Ажилласан"), (RED, "Гарсан"), (GAP, "Програм ажиллаагүй"), (LUNCH, "Цайны цаг"),
+                            (ORANGE, "Сэжигтэй (зураг / таглагдсан камер)")):
             tk.Label(legend, text="■", fg=color, bg=BG, font=(FONT, 12)).pack(side="left")
             tk.Label(legend, text=text + "   ", fg=MUTED, bg=BG, font=(FONT, 10)).pack(side="left")
         tk.Label(legend, text="Мөр дээр дарж дэлгэрэнгүйг харна", fg=MUTED, bg=BG, font=(FONT, 10)).pack(side="right")
@@ -190,7 +211,8 @@ class Dashboard(tk.Toplevel):
 
     def _render_day(self) -> None:
         data = self.data
-        people = [p for p in data["people"] if data["is_today"] or p["has_day"]]
+        sset = data["settings"]
+        people = [p for p in data["people"] if data["is_today"] or p["has_day"] or p["metrics"]["absent"]]
         for w in self.kpi.winfo_children():
             w.destroy()
         total = sum(p["day"]["work_seconds"] for p in people)
@@ -201,6 +223,15 @@ class Dashboard(tk.Toplevel):
                 self._kpi(title, str(sum(1 for p in people if p["status"] == st)), STATUS_COLOR[st])
         self._kpi("Нийт ажилласан", fmt_dur(total))
         self._kpi("Дундаж / хүн", fmt_dur(total / len(worked)) if worked else "—")
+        late = sum(1 for p in people if p["metrics"]["late"])
+        absent = sum(1 for p in people if p["metrics"]["absent"])
+        if late:
+            self._kpi("Хоцорсон", str(late), ORANGE)
+        if absent:
+            self._kpi("Ирээгүй", str(absent), RED)
+        sus = sum(1 for p in people if p["flag_sec"]["static"] or p["flag_sec"]["blocked"])
+        if sus:
+            self._kpi("Сэжигтэй", str(sus), ORANGE)
         if self.is_admin and data["pending"]:
             self._kpi("Баталгаажуулах", str(len(data["pending"])), "#9a6700")
 
@@ -213,41 +244,67 @@ class Dashboard(tk.Toplevel):
                            "Харах хүн алга. Менежер бол админ таныг хэлтэст оноосон эсэхийг шалгана уу.")
             cv.configure(scrollregion=(0, 0, total_w, 60))
             return
-        rng = dd.day_range(p["day"]["periods"] for p in people)
+        rng = dd.day_range((p["day"]["periods"] for p in people), sset)
         for i, p in enumerate(people):
             y = i * ROW_H
             tag = f"row{i}"
+            m, d, st = p["metrics"], p["day"], p["status"]
             cv.create_rectangle(0, y, total_w, y + ROW_H, fill=BG, outline="", tags=(tag, "bgrow"))
             cv.create_line(0, y + ROW_H - 1, total_w, y + ROW_H - 1, fill=GAP)
             x = 12
-            cv.create_text(x, y + 15, anchor="w", text=p["name"][:26], font=(FONT, 12, "bold"), fill=FG, tags=tag)
-            sub = " · ".join(s for s in (p["department"], ROLE_TEXT.get(p["role"], "")) if s)
+            warn = p["camera_state"] in ("static", "blocked") or p["flag_sec"]["static"] or p["flag_sec"]["blocked"]
+            cv.create_text(x, y + 15, anchor="w", text=("⚠ " if warn else "") + p["name"][:24],
+                           font=(FONT, 12, "bold"), fill=ORANGE if warn else FG, tags=tag)
+            sub = " · ".join(t for t in (p["department"], ROLE_TEXT.get(p["role"], "")) if t)
             cv.create_text(x, y + 31, anchor="w", text=sub, font=(FONT, 10), fill=MUTED, tags=tag)
             x += COLS[0][1]
-            st = p["status"]
-            cv.create_oval(x, y + 17, x + 9, y + 26, fill=STATUS_COLOR[st], outline="", tags=tag)
-            cv.create_text(x + 15, y + 15, anchor="w", text=dd.STATUS_TEXT[st], font=(FONT, 11, "bold"),
-                           fill=STATUS_COLOR[st], tags=tag)
-            lv = p["live"] or {}
-            since = dd.ago_text(lv.get("status_since")) if st != "offline" else (
-                (dd.ago_text(lv.get("last_seen_at")) + " өмнө") if lv.get("last_seen_at") else "")
-            cv.create_text(x + 15, y + 31, anchor="w", text=since, font=(FONT, 10), fill=MUTED, tags=tag)
+            if m["absent"]:
+                cv.create_text(x, y + ROW_H / 2, anchor="w", text="Ирээгүй", font=(FONT, 11, "bold"), fill=RED, tags=tag)
+            else:
+                cv.create_oval(x, y + 17, x + 9, y + 26, fill=STATUS_COLOR[st], outline="", tags=tag)
+                cv.create_text(x + 15, y + 15, anchor="w", text=dd.STATUS_TEXT[st], font=(FONT, 11, "bold"),
+                               fill=STATUS_COLOR[st], tags=tag)
+                lv = p["live"] or {}
+                if p["camera_state"] in ("static", "blocked"):
+                    since = "⚠ " + dd.CAMERA_TEXT[p["camera_state"]]
+                elif st != "offline":
+                    since = dd.ago_text(lv.get("status_since"))
+                else:
+                    since = (dd.ago_text(lv.get("last_seen_at")) + " өмнө") if lv.get("last_seen_at") else ""
+                cv.create_text(x + 15, y + 31, anchor="w", text=since, font=(FONT, 10),
+                               fill=ORANGE if since.startswith("⚠") else MUTED, tags=tag)
             x += COLS[1][1]
-            app = (lv.get("current_app") or "—") if st != "offline" else "—"
-            cv.create_text(x, y + ROW_H / 2, anchor="w", text=app[:22], font=(FONT, 11), fill=FG, tags=tag)
+            app = ((p["live"] or {}).get("current_app") or "—") if st != "offline" else "—"
+            cv.create_text(x, y + ROW_H / 2, anchor="w", text=app[:20], font=(FONT, 11), fill=FG, tags=tag)
             x += COLS[2][1]
-            d = p["day"]
-            cv.create_text(x, y + ROW_H / 2, anchor="w", text=fmt_dur(d["work_seconds"]), font=(FONT, 12, "bold"),
+            cv.create_text(x, y + 15, anchor="w", text=fmt_dur(d["work_seconds"]), font=(FONT, 12, "bold"),
                            fill=FG, tags=tag)
+            if m["overtime"] >= 300:
+                cv.create_text(x, y + 31, anchor="w", text=f"+{fmt_dur(m['overtime'])} илүү", font=(FONT, 9),
+                               fill=GREEN, tags=tag)
             x += COLS[3][1]
-            cv.create_text(x, y + ROW_H / 2, anchor="w", text=fmt_dur(d["away_seconds"]), font=(FONT, 11), fill=FG,
-                           tags=tag)
+            cv.create_text(x, y + 15, anchor="w", text=fmt_dur(m["away_net"]), font=(FONT, 11), fill=FG, tags=tag)
+            if m["closed"] >= 300:
+                cv.create_text(x, y + 31, anchor="w", text=f"хаалттай {fmt_dur(m['closed'])}", font=(FONT, 9),
+                               fill=ORANGE, tags=tag)
             x += COLS[4][1]
             inout = f"{(d['first_seen'] or '—')[:5]} – {(d['last_seen'] or '—')[:5]}"
-            cv.create_text(x, y + ROW_H / 2, anchor="w", text=inout, font=(FONT, 11), fill=FG, tags=tag)
+            cv.create_text(x, y + 15, anchor="w", text=inout, font=(FONT, 11), fill=FG, tags=tag)
+            if m["early"]:
+                cv.create_text(x, y + 31, anchor="w", text=f"{fmt_dur(m['early'])} эрт явсан", font=(FONT, 9),
+                               fill=ORANGE, tags=tag)
             x += COLS[5][1]
-            draw_timeline(cv, x, y + 16, COLS[6][1] - 16, 12, d["periods"], rng)
-            cv.tag_bind(tag, "<Button-1>", lambda _e, person=p: DetailWindow(self, person, self.data["day"]))
+            cv.create_text(x, y + ROW_H / 2, anchor="w", text=fmt_dur(m["late"]) if m["late"] else "—",
+                           font=(FONT, 11, "bold" if m["late"] else "normal"), fill=ORANGE if m["late"] else MUTED,
+                           tags=tag)
+            x += COLS[6][1]
+            pct = p["prod"]["pct"]
+            cv.create_text(x, y + ROW_H / 2, anchor="w", text=f"{pct}%" if pct is not None else "—",
+                           font=(FONT, 11, "bold"), fill=(GREEN if pct >= 60 else ORANGE if pct >= 30 else RED)
+                           if pct is not None else MUTED, tags=tag)
+            x += COLS[7][1]
+            draw_timeline(cv, x, y + 16, COLS[8][1] - 16, 12, d["periods"], rng, sset, d["flags"], tags=(tag,))
+            cv.tag_bind(tag, "<Button-1>", lambda _e, person=p: DetailWindow(self, person, self.data))
             cv.tag_bind(tag, "<Enter>", lambda _e, t=tag: (cv.itemconfigure(f"{t}&&bgrow", fill=SURFACE),
                                                            cv.configure(cursor="hand2")))
             cv.tag_bind(tag, "<Leave>", lambda _e, t=tag: (cv.itemconfigure(f"{t}&&bgrow", fill=BG),
@@ -279,7 +336,7 @@ class Dashboard(tk.Toplevel):
             cv.create_text(name_w + cell_w * i + cell_w / 2, h / 2, text=f"{wd} {d[5:].replace('-', '/')}",
                            font=(FONT, 11), fill=MUTED)
         cv.create_text(name_w + cell_w * 7 + cell_w / 2, h / 2, text="Нийт", font=(FONT, 11, "bold"), fill=MUTED)
-        people = [p for p in self.data["people"] if p["week"]]
+        people = [p for p in self.data["people"] if p["week"] or p["week_absent"]]
         people.sort(key=lambda p: -sum(p["week"].values()))
         peak = max([8 * 3600] + [s for p in people for s in p["week"].values()])
         for r, p in enumerate(people):
@@ -289,7 +346,10 @@ class Dashboard(tk.Toplevel):
             for i, d in enumerate(days):
                 s = p["week"].get(d, 0)
                 cx = name_w + cell_w * i
-                if s:
+                if not s and d in p["week_absent"]:
+                    cv.create_rectangle(cx + 6, y + 5, cx + cell_w - 6, y + h - 5, fill="#ffebe9", outline="")
+                    cv.create_text(cx + cell_w / 2, y + h / 2, text="Ирээгүй", font=(FONT, 10, "bold"), fill=RED)
+                elif s:
                     t = 0.15 + 0.7 * min(1.0, s / peak)
                     cv.create_rectangle(cx + 6, y + 5, cx + cell_w - 6, y + h - 5, fill=_mix(BG, GREEN, t),
                                         outline="")
@@ -335,7 +395,8 @@ class Dashboard(tk.Toplevel):
         tk.Checkbutton(form, text="Идэвхтэй", variable=self.u_active, bg=BG, font=(FONT, 11)).grid(
             row=1, column=3, padx=(0, 10))
         button(form, "Хадгалах", self._save_user, primary=True).grid(row=1, column=4, padx=(0, 10))
-        button(form, "Цагийн түүхийг устгах", self._delete_user_data).grid(row=1, column=5)
+        button(form, "Түр нууц үг тавих", self._set_password).grid(row=1, column=5, padx=(0, 10))
+        button(form, "Цагийн түүхийг устгах", self._delete_user_data).grid(row=1, column=6)
         tk.Label(tab, text="Шинэ хүн програмаас бүртгүүлэхэд энд шараар гарна. Эрх, хэлтсийг нь оноогоод Хадгалах.",
                  bg=BG, fg=MUTED, font=(FONT, 10)).pack(anchor="w", padx=6, pady=(0, 6))
 
@@ -389,6 +450,25 @@ class Dashboard(tk.Toplevel):
                     lambda _: (self.info.config(text="Хадгаллаа", fg=GREEN), self.refresh()),
                     lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
 
+    def _set_password(self) -> None:
+        p = self._selected_profile()
+        if not p:
+            return messagebox.showinfo(APP_TITLE, "Жагсаалтаас хүн сонгоно уу", parent=self)
+        import secrets
+
+        suggested = "".join(secrets.choice("abcdefghjkmnpqrstuvwxyz23456789") for _ in range(8))
+        pw = simpledialog.askstring(APP_TITLE, f"{p['full_name'] or p['email']}-д тавих түр нууц үг (6+ тэмдэгт).\n"
+                                    "Нэвтэрсний дараа тэр хүн \"Нууц үг солих\"-оор сольж болно.",
+                                    initialvalue=suggested, parent=self)
+        if not pw:
+            return
+        if len(pw) < 6:
+            return messagebox.showwarning(APP_TITLE, "Хамгийн багадаа 6 тэмдэгт", parent=self)
+        self.bg.run(lambda: self.supa.rpc("wt_admin_set_password", {"p_user": p["user_id"], "p_password": pw}),
+                    lambda _: messagebox.showinfo(APP_TITLE, f"Түр нууц үг тавигдлаа:\n\n{pw}\n\n"
+                                                             f"Үүнийг {p['email']}-д хэлнэ үү.", parent=self),
+                    lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
+
     def _delete_user_data(self) -> None:
         p = self._selected_profile()
         if not p:
@@ -404,15 +484,15 @@ class Dashboard(tk.Toplevel):
     def _build_departments_tab(self) -> None:
         tab = tk.Frame(self.nb, bg=BG, padx=8, pady=8)
         self.nb.add(tab, text="Хэлтэс")
-        self.dept_lb = tk.Listbox(tab, font=(FONT, 12), height=14, width=40, activestyle="none")
-        self.dept_lb.grid(row=0, column=0, rowspan=6, sticky="nsw")
-        self.dept_lb.bind("<<ListboxSelect>>", lambda _: self.dept_name.set(self._dept_sel()["name"])
-                          if self._dept_sel() else None)
+        self.dept_lb = tk.Listbox(tab, font=(FONT, 12), height=14, width=42, activestyle="none", exportselection=False)
+        self.dept_lb.grid(row=0, column=0, rowspan=9, sticky="nsw")
+        self.dept_lb.bind("<<ListboxSelect>>", self._dept_selected)
         self.dept_name = tk.StringVar()
-        tk.Label(tab, text="Хэлтсийн нэр", bg=BG, fg=MUTED, font=(FONT, 11)).grid(row=0, column=1, sticky="w",
-                                                                                 padx=12)
-        tk.Entry(tab, textvariable=self.dept_name, width=28, font=(FONT, 12)).grid(row=1, column=1, padx=12,
-                                                                                  sticky="w")
+        self.dept_chat = tk.StringVar()
+        lbl = lambda r, t: tk.Label(tab, text=t, bg=BG, fg=MUTED, font=(FONT, 11)).grid(  # noqa: E731
+            row=r, column=1, sticky="w", padx=12)
+        lbl(0, "Хэлтсийн нэр")
+        tk.Entry(tab, textvariable=self.dept_name, width=30, font=(FONT, 12)).grid(row=1, column=1, padx=12, sticky="w")
         row = tk.Frame(tab, bg=BG)
         row.grid(row=2, column=1, sticky="w", padx=12, pady=8)
         button(row, "Шинээр нэмэх", lambda: self._save_dept(None), primary=True).pack(side="left")
@@ -420,18 +500,34 @@ class Dashboard(tk.Toplevel):
         button(row, "Устгах", self._delete_dept).pack(side="left")
         tk.Label(tab, text="Хэлтэс устгахад тэнд байсан хүмүүс хэлтэсгүй болно.", bg=BG, fg=MUTED,
                  font=(FONT, 10)).grid(row=3, column=1, sticky="w", padx=12)
+        lbl(5, "Энэ хэлтсийн мэдэгдэл очих Telegram чат (групп)-ын ID")
+        self.dept_chat_cb = ttk.Combobox(tab, textvariable=self.dept_chat, width=34)
+        self.dept_chat_cb.grid(row=6, column=1, padx=12, sticky="w")
+        button(tab, "Чат хадгалах", self._save_dept_chat).grid(row=7, column=1, sticky="w", padx=12, pady=6)
+        tk.Label(tab, text="Тохиргоо → Telegram хэсгээс \"Чат олох\" дарвал энд жагсаалт гарна.", bg=BG, fg=MUTED,
+                 font=(FONT, 10)).grid(row=8, column=1, sticky="nw", padx=12)
 
     def _render_departments(self) -> None:
+        sel = self.dept_lb.curselection()
         self.dept_lb.delete(0, "end")
         counts: dict = {}
         for p in self.data["profiles"]:
             counts[p["department_id"]] = counts.get(p["department_id"], 0) + 1
         for d in self.data["departments"]:
-            self.dept_lb.insert("end", f"{d['name']}   ({counts.get(d['id'], 0)} хүн)")
+            chat = "  ✉" if d.get("telegram_chat_id") else ""
+            self.dept_lb.insert("end", f"{d['name']}   ({counts.get(d['id'], 0)} хүн){chat}")
+        if sel and sel[0] < len(self.data["departments"]):
+            self.dept_lb.selection_set(sel[0])
 
     def _dept_sel(self) -> dict | None:
         sel = self.dept_lb.curselection()
         return self.data["departments"][sel[0]] if sel and self.data else None
+
+    def _dept_selected(self, _=None) -> None:
+        d = self._dept_sel()
+        if d:
+            self.dept_name.set(d["name"])
+            self.dept_chat.set(d.get("telegram_chat_id") or "")
 
     def _save_dept(self, dept: dict | None) -> None:
         name = self.dept_name.get().strip()
@@ -440,6 +536,15 @@ class Dashboard(tk.Toplevel):
         params = {"p_id": dept["id"] if dept else None, "p_name": name}
         self.bg.run(lambda: self.supa.rpc("wt_admin_save_department", params),
                     lambda _: (self.dept_name.set(""), self.refresh()),
+                    lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
+
+    def _save_dept_chat(self) -> None:
+        dept = self._dept_sel()
+        if not dept:
+            return messagebox.showinfo(APP_TITLE, "Жагсаалтаас хэлтэс сонгоно уу", parent=self)
+        chat = self.dept_chat.get().split("  ·  ")[-1].strip()
+        self.bg.run(lambda: self.supa.rpc("wt_admin_set_department_chat", {"p_id": dept["id"], "p_chat": chat}),
+                    lambda _: (self.info.config(text="Чат хадгаллаа", fg=GREEN), self.refresh()),
                     lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
 
     def _delete_dept(self) -> None:
@@ -452,50 +557,208 @@ class Dashboard(tk.Toplevel):
 
     # ================================================================== Тохиргоо (админ)
     def _build_settings_tab(self) -> None:
-        tab = tk.Frame(self.nb, bg=BG, padx=14, pady=14)
-        self.nb.add(tab, text="Тохиргоо")
-        self.s_grace = tk.IntVar(value=20)
-        self.s_minaway = tk.IntVar(value=1)
-        self.s_input = tk.BooleanVar(value=True)
-        self.s_report = tk.StringVar(value="18:00")
-        rows = [
-            ("Царай харагдахгүй болоод хэдэн секундэд \"Гарсан\" гэж үзэх", tk.Spinbox(
-                tab, from_=5, to=900, increment=5, textvariable=self.s_grace, width=6, font=(FONT, 12))),
-            ("Тайланд жагсаах хамгийн богино гарсан хугацаа (минут)", tk.Spinbox(
-                tab, from_=1, to=60, textvariable=self.s_minaway, width=6, font=(FONT, 12))),
-            ("Өдрийн тайлан илгээх цаг (имэйл/Telegram тохируулсан бол)", tk.Entry(
-                tab, textvariable=self.s_report, width=7, font=(FONT, 12))),
-        ]
-        for i, (label, widget) in enumerate(rows):
-            tk.Label(tab, text=label, bg=BG, fg=FG, font=(FONT, 12)).grid(row=i, column=0, sticky="w", pady=6)
-            widget.grid(row=i, column=1, sticky="w", padx=12)
-        tk.Checkbutton(tab, text="Гар/хулгана хөдөлж байвал (царай танигдаагүй ч) ажиллаж байна гэж үзэх",
-                       variable=self.s_input, bg=BG, font=(FONT, 12)).grid(row=3, column=0, columnspan=2,
-                                                                            sticky="w", pady=6)
-        button(tab, "Хадгалах", self._save_settings, primary=True).grid(row=4, column=0, sticky="w", pady=(12, 0))
-        tk.Label(tab, text="Бүх компьютер дээр 10 минутын дотор хүчинтэй болно.", bg=BG, fg=MUTED,
-                 font=(FONT, 10)).grid(row=5, column=0, sticky="w", pady=(6, 0))
-        self.bg.run(lambda: self.supa.select("wt_company", "settings", id="eq.1"), self._fill_settings)
+        outer = tk.Frame(self.nb, bg=BG)
+        self.nb.add(outer, text="Тохиргоо")
+        cv = tk.Canvas(outer, bg=BG, highlightthickness=0)
+        ys = ttk.Scrollbar(outer, orient="vertical", command=cv.yview)
+        cv.configure(yscrollcommand=ys.set)
+        ys.pack(side="right", fill="y")
+        cv.pack(side="left", fill="both", expand=True)
+        tab = tk.Frame(cv, bg=BG, padx=14, pady=10)
+        cv.create_window(0, 0, window=tab, anchor="nw")
+        tab.bind("<Configure>", lambda _e: cv.configure(scrollregion=cv.bbox("all")))
+        bind_wheel(cv, cv)
+        self.sv: dict[str, tk.Variable] = {}
 
-    def _fill_settings(self, rows) -> None:
-        s = (rows[0]["settings"] if rows else None) or {}
-        self._settings = s
-        self.s_grace.set(int(s.get("away_grace_sec", 20)))
-        self.s_minaway.set(int(s.get("min_away_period_min", 1)))
-        self.s_input.set(bool(s.get("input_counts_as_presence", True)))
-        self.s_report.set(str(s.get("report_time", "18:00")))
+        def section(col, title):
+            f = tk.LabelFrame(tab, text=" " + title + " ", bg=BG, fg=FG, font=(FONT, 12, "bold"), padx=10, pady=6)
+            f.grid(row=self._srow[col], column=col, sticky="nwe", padx=(0, 14), pady=(0, 10))
+            self._srow[col] += 1
+            return f
+
+        def field(f, r, label, key, kind="entry", width=7, **kw):
+            tk.Label(f, text=label, bg=BG, fg=FG, font=(FONT, 11)).grid(row=r, column=0, sticky="w", pady=3)
+            if kind == "check":
+                v = tk.BooleanVar()
+                tk.Checkbutton(f, variable=v, bg=BG).grid(row=r, column=1, sticky="w", padx=8)
+            elif kind == "spin":
+                v = tk.IntVar()
+                tk.Spinbox(f, textvariable=v, width=width, font=(FONT, 11), **kw).grid(row=r, column=1, sticky="w",
+                                                                                     padx=8)
+            else:
+                v = tk.StringVar()
+                tk.Entry(f, textvariable=v, width=width, font=(FONT, 11), **kw).grid(row=r, column=1, sticky="w",
+                                                                                   padx=8)
+            self.sv[key] = v
+
+        self._srow = [0, 0]
+        f = section(0, "Ажлын хуваарь")
+        field(f, 0, "Ажил эхлэх (ЦЦ:ММ)", "work_start")
+        field(f, 1, "Ажил дуусах", "work_end")
+        field(f, 2, "Цайны цаг эхлэх", "lunch_start")
+        field(f, 3, "Цайны цаг дуусах", "lunch_end")
+        field(f, 4, "Хоцролтын хүлцэл (мин)", "late_grace_min", "spin", from_=0, to=120)
+        tk.Label(f, text="Ажлын өдрүүд", bg=BG, fg=FG, font=(FONT, 11)).grid(row=5, column=0, sticky="w", pady=3)
+        wd = tk.Frame(f, bg=BG)
+        wd.grid(row=5, column=1, sticky="w", padx=4)
+        self.s_days = []
+        for i, name in enumerate(WEEKDAYS):
+            v = tk.BooleanVar()
+            tk.Checkbutton(wd, text=name, variable=v, bg=BG, font=(FONT, 10)).pack(side="left")
+            self.s_days.append(v)
+
+        f = section(0, "Илрүүлэлт")
+        field(f, 0, "Царай харагдахгүй болоод \"Гарсан\" гэх (сек)", "away_grace_sec", "spin", from_=5, to=900,
+              increment=5)
+        field(f, 1, "Гар/хулгана хөдөлж байвал ажиллаж байна гэж үзэх", "input_counts_as_presence", "check")
+        field(f, 2, "Зураг (хөдөлгөөнгүй царай) илрүүлэх", "liveness_enabled", "check")
+        field(f, 3, "  … хэдэн секунд огт хөдлөхгүй бол сэжигтэй", "liveness_static_sec", "spin", from_=30,
+              to=900, increment=10)
+        field(f, 4, "Тайланд жагсаах богино гарсан хугацаа (мин)", "min_away_period_min", "spin", from_=1, to=60)
+        field(f, 5, "Өдрийн тайлан илгээх цаг (имэйл/Telegram)", "report_time")
+
+        f = section(0, "Апп ангилал (мөр бүрт нэг түлхүүр үг)")
+        tk.Label(f, text="Бүтээмжтэй", bg=BG, fg=GREEN, font=(FONT, 11, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(f, text="Бүтээмжгүй", bg=BG, fg=RED, font=(FONT, 11, "bold")).grid(row=0, column=1, sticky="w",
+                                                                                   padx=10)
+        self.s_prod = tk.Text(f, width=24, height=7, font=(FONT, 11))
+        self.s_unprod = tk.Text(f, width=24, height=7, font=(FONT, 11))
+        self.s_prod.grid(row=1, column=0, sticky="w")
+        self.s_unprod.grid(row=1, column=1, sticky="w", padx=10)
+        tk.Label(f, text="Жишээ: Excel, Word, 1C, Visual Studio Code  /  YouTube, Facebook, Steam.\n"
+                         "Аппын нэрэнд агуулагдвал тохирно (том жижиг үсэг хамаагүй). Хөтчийн доторх сайтыг ялгахгүй.",
+                 bg=BG, fg=MUTED, font=(FONT, 10), justify="left").grid(row=2, column=0, columnspan=2, sticky="w")
+
+        f = section(1, "Telegram мэдэгдэл")
+        field(f, 0, "Мэдэгдэл асаах", "alerts_enabled", "check")
+        tk.Label(f, text="Bot token (@BotFather)", bg=BG, fg=FG, font=(FONT, 11)).grid(row=1, column=0, sticky="w")
+        self.s_token = tk.StringVar()
+        tk.Entry(f, textvariable=self.s_token, width=34, font=(FONT, 11), show="•").grid(row=1, column=1, sticky="w",
+                                                                                      padx=8)
+        self.s_token_state = tk.Label(f, text="", bg=BG, fg=MUTED, font=(FONT, 10))
+        self.s_token_state.grid(row=2, column=1, sticky="w", padx=8)
+        tk.Label(f, text="Админы чат ID (бүх мэдэгдэл)", bg=BG, fg=FG, font=(FONT, 11)).grid(row=3, column=0,
+                                                                                             sticky="w")
+        self.s_admin_chat = tk.StringVar()
+        self.s_chat_cb = ttk.Combobox(f, textvariable=self.s_admin_chat, width=32)
+        self.s_chat_cb.grid(row=3, column=1, sticky="w", padx=8)
+        row = tk.Frame(f, bg=BG)
+        row.grid(row=4, column=1, sticky="w", padx=8, pady=4)
+        button(row, "Чат олох", self._find_chats).pack(side="left")
+        button(row, "Туршиж илгээх", self._test_telegram).pack(side="left", padx=6)
+        field(f, 5, "Ирээгүй гэж мэдэгдэх (ажил эхэлснээс хойш, мин)", "alert_late_min", "spin", from_=5, to=240)
+        field(f, 6, "Удаан гарсан гэж мэдэгдэх (мин)", "alert_away_min", "spin", from_=5, to=480)
+        field(f, 7, "Програм хаалттай гэж мэдэгдэх (мин)", "alert_offline_min", "spin", from_=5, to=480)
+        tk.Label(f, text="1) @BotFather → /newbot → токен.  2) Ботыг групп(үүд)-т нэмнэ.\n"
+                         "3) \"Чат олох\" → админы чатыг сонгоно. Хэлтэс бүрийн чатыг Хэлтэс табаас.\n"
+                         "4) Supabase дээр pg_cron, pg_net асаалттай байх (README).\n"
+                         "Шалгалт 5 минут тутам серверт явагдана — компьютер унтраалттай байсан ч.",
+                 bg=BG, fg=MUTED, font=(FONT, 10), justify="left").grid(row=8, column=0, columnspan=2, sticky="w",
+                                                                        pady=(6, 0))
+
+        bar = tk.Frame(tab, bg=BG)
+        bar.grid(row=10, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        button(bar, "Бүх тохиргоог хадгалах", self._save_settings, primary=True).pack(side="left")
+        tk.Label(bar, text="  Бүх компьютерт 10 минутын дотор хүчинтэй болно.", bg=BG, fg=MUTED,
+                 font=(FONT, 10)).pack(side="left")
+        self._found_chats: list[tuple[str, str]] = []
+        self._settings: dict = {}
+        self.bg.run(lambda: (self.supa.select("wt_company", "settings", id="eq.1"),
+                             self.supa.rpc("wt_admin_telegram_configured")), self._fill_settings)
+
+    def _fill_settings(self, result) -> None:
+        rows, configured = result
+        raw = (rows[0]["settings"] if rows else None) or {}
+        self._settings = raw
+        s = dd.settings_with_defaults(raw)
+        defaults = {"away_grace_sec": 20, "input_counts_as_presence": True, "liveness_enabled": True,
+                    "liveness_static_sec": 120, "min_away_period_min": 1, "report_time": "18:00",
+                    "alerts_enabled": False, "alert_late_min": 30, "alert_away_min": 40, "alert_offline_min": 15}
+        for key, var in self.sv.items():
+            val = s.get(key, defaults.get(key))
+            try:
+                var.set(val if val is not None else "")
+            except tk.TclError:
+                pass
+        workdays = set(s.get("workdays") or [])
+        for i, v in enumerate(self.s_days):
+            v.set((i + 1) in workdays)
+        for widget, key in ((self.s_prod, "app_productive"), (self.s_unprod, "app_unproductive")):
+            widget.delete("1.0", "end")
+            widget.insert("1.0", "\n".join(s.get(key) or []))
+        self.s_admin_chat.set(raw.get("telegram_admin_chat", ""))
+        self.s_token_state.config(text="✓ Токен хадгалагдсан (солих бол шинээр оруулна)" if configured
+                                  else "Токен оруулаагүй", fg=GREEN if configured else MUTED)
+
+    def _collect_settings(self) -> dict:
+        new = dict(self._settings)
+        for key in ("work_start", "work_end", "lunch_start", "lunch_end", "report_time"):
+            v = self.sv[key].get().strip()
+            if v:
+                datetime.strptime(v, "%H:%M")
+            new[key] = v
+        for key in ("late_grace_min", "away_grace_sec", "liveness_static_sec", "min_away_period_min",
+                    "alert_late_min", "alert_away_min", "alert_offline_min"):
+            new[key] = int(self.sv[key].get())
+        for key in ("input_counts_as_presence", "liveness_enabled", "alerts_enabled"):
+            new[key] = bool(self.sv[key].get())
+        new["workdays"] = [i + 1 for i, v in enumerate(self.s_days) if v.get()]
+        for widget, key in ((self.s_prod, "app_productive"), (self.s_unprod, "app_unproductive")):
+            new[key] = [ln.strip() for ln in widget.get("1.0", "end").splitlines() if ln.strip()]
+        new["telegram_admin_chat"] = self.s_admin_chat.get().split("  ·  ")[-1].strip()
+        new.setdefault("timezone", "Asia/Ulaanbaatar")
+        return new
 
     def _save_settings(self) -> None:
         try:
-            datetime.strptime(self.s_report.get().strip(), "%H:%M")
-            new = dict(getattr(self, "_settings", {}), away_grace_sec=int(self.s_grace.get()),
-                       min_away_period_min=int(self.s_minaway.get()),
-                       input_counts_as_presence=bool(self.s_input.get()), report_time=self.s_report.get().strip())
+            new = self._collect_settings()
         except (ValueError, tk.TclError):
-            return messagebox.showerror(APP_TITLE, "Утгууд буруу байна (цаг: ЦЦ:ММ)", parent=self)
-        self.bg.run(lambda: self.supa.rpc("wt_admin_save_settings", {"p_settings": new}),
-                    lambda _: (setattr(self, "_settings", new), messagebox.showinfo(APP_TITLE, "Хадгаллаа",
-                                                                                     parent=self)),
+            return messagebox.showerror(APP_TITLE, "Утга буруу байна (цаг: ЦЦ:ММ, тоо бүхэл)", parent=self)
+        token = self.s_token.get().strip()
+
+        def work():
+            self.supa.rpc("wt_admin_save_settings", {"p_settings": new})
+            if token:
+                self.supa.rpc("wt_admin_set_telegram", {"p_token": token})
+
+        def done(_):
+            self._settings = new
+            self.s_token.set("")
+            if token:
+                self.s_token_state.config(text="✓ Токен хадгалагдсан", fg=GREEN)
+            messagebox.showinfo(APP_TITLE, "Хадгаллаа", parent=self)
+            self.refresh()
+
+        self.bg.run(work, done, lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
+
+    def _find_chats(self) -> None:
+        from .notify import tg_find_chats
+
+        token = self.s_token.get().strip()
+        if not token:
+            return messagebox.showinfo(APP_TITLE, "Bot token-оо оруулаад дарна уу (хадгалсан токеныг програм "
+                                                  "буцааж уншдаггүй).", parent=self)
+
+        def done(chats):
+            self._found_chats = chats
+            values = [f"{name}  ·  {cid}" for name, cid in chats]
+            self.s_chat_cb.configure(values=values)
+            self.dept_chat_cb.configure(values=values)
+            messagebox.showinfo(APP_TITLE, (f"{len(chats)} чат олдлоо. Жагсаалтаас сонгоно уу." if chats else
+                                            "Чат олдсонгүй. Ботыг группт нэмээд, группт ямар нэг мессеж бичээд "
+                                            "дахин оролдоно уу."), parent=self)
+
+        self.bg.run(lambda: tg_find_chats(token), done,
+                    lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
+
+    def _test_telegram(self) -> None:
+        from .notify import tg_send
+
+        token, chat = self.s_token.get().strip(), self.s_admin_chat.get().split("  ·  ")[-1].strip()
+        if not token or not chat:
+            return messagebox.showinfo(APP_TITLE, "Токен болон админы чатыг оруулна уу", parent=self)
+        self.bg.run(lambda: tg_send(token, chat, "✅ Ажлын бүтээмж: туршилтын мэдэгдэл"),
+                    lambda _: messagebox.showinfo(APP_TITLE, "Илгээлээ. Telegram-аа шалгана уу.", parent=self),
                     lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
 
     # ================================================================== CSV
@@ -520,62 +783,92 @@ class Dashboard(tk.Toplevel):
 
 
 class DetailWindow(tk.Toplevel):
-    def __init__(self, parent: tk.Misc, p: dict, day: str):
+    def __init__(self, parent: tk.Misc, p: dict, data: dict):
         super().__init__(parent)
+        day, sset = data["day"], data["settings"]
         self.title(f"{p['name']} — {day}")
         self.configure(bg=BG, padx=18, pady=14)
         self.resizable(False, False)
-        d = p["day"]
-        st = p["status"]
+        d, m, st = p["day"], p["metrics"], p["status"]
         lv = p["live"] or {}
         tk.Label(self, text=p["name"], font=(FONT, 17, "bold"), fg=FG, bg=BG).pack(anchor="w")
+        cam = dd.CAMERA_TEXT.get(p.get("camera_state") or "", "—")
         meta = [dd.STATUS_TEXT[st], p["department"], ROLE_TEXT.get(p["role"], ""), lv.get("hostname", ""),
-                "камер: " + ("OK" if lv.get("camera_ok") else "олдсонгүй" if lv.get("camera_ok") is False else "—")]
-        tk.Label(self, text=" · ".join(m for m in meta if m), font=(FONT, 11), fg=STATUS_COLOR[st], bg=BG).pack(
+                f"камер: {cam}"]
+        tk.Label(self, text=" · ".join(x for x in meta if x), font=(FONT, 11), fg=STATUS_COLOR[st], bg=BG).pack(
             anchor="w")
 
-        kpi = tk.Frame(self, bg=BG, pady=10)
-        kpi.pack(fill="x")
-        for title, value, color in (("Ажилласан", fmt_dur(d["work_seconds"]), GREEN),
-                                    ("Гарсан", fmt_dur(d["away_seconds"]), RED),
-                                    ("Ирсэн – Явсан", f"{(d['first_seen'] or '—')[:5]} – {(d['last_seen'] or '—')[:5]}",
-                                     FG)):
-            card = tk.Frame(kpi, bg=BG, highlightthickness=1, highlightbackground=BORDER, padx=12, pady=6)
-            card.pack(side="left", padx=(0, 8))
-            tk.Label(card, text=title, font=(FONT, 10), fg=MUTED, bg=BG).pack(anchor="w")
-            tk.Label(card, text=value, font=(FONT, 17, "bold"), fg=color, bg=BG).pack(anchor="w")
+        def cards(items):
+            row = tk.Frame(self, bg=BG, pady=6)
+            row.pack(fill="x")
+            for title, value, color in items:
+                card = tk.Frame(row, bg=BG, highlightthickness=1, highlightbackground=BORDER, padx=12, pady=6)
+                card.pack(side="left", padx=(0, 8))
+                tk.Label(card, text=title, font=(FONT, 10), fg=MUTED, bg=BG).pack(anchor="w")
+                tk.Label(card, text=value, font=(FONT, 16, "bold"), fg=color, bg=BG).pack(anchor="w")
 
-        W = 640
-        tk.Label(self, text="Өдрийн явц", font=(FONT, 12, "bold"), fg=FG, bg=BG).pack(anchor="w", pady=(6, 4))
-        rng = dd.day_range([d["periods"]])
-        cv = tk.Canvas(self, width=W, height=44, bg=BG, highlightthickness=0)
+        pct = p["prod"]["pct"]
+        cards([("Ажилласан", fmt_dur(d["work_seconds"]), GREEN),
+               ("Гарсан (цайны цаг хассан)", fmt_dur(m["away_net"]), RED),
+               ("Ирсэн – Явсан", f"{(d['first_seen'] or '—')[:5]} – {(d['last_seen'] or '—')[:5]}", FG),
+               ("Бүтээмж", f"{pct}%" if pct is not None else "—", GREEN if pct is not None else MUTED)])
+        if m["workday"]:
+            cards([("Хоцорсон", fmt_dur(m["late"]) if m["late"] else "—", ORANGE if m["late"] else MUTED),
+                   ("Эрт явсан", fmt_dur(m["early"]) if m["early"] else "—", ORANGE if m["early"] else MUTED),
+                   ("Илүү цаг", fmt_dur(m["overtime"]) if m["overtime"] else "—", GREEN if m["overtime"] else MUTED),
+                   ("Програм хаалттай", fmt_dur(m["closed"]) if m["closed"] else "—",
+                    ORANGE if m["closed"] else MUTED)])
+        else:
+            tk.Label(self, text="Амралтын өдөр — бүх ажилласан цаг илүү цагт тооцогдоно", font=(FONT, 11),
+                     fg=MUTED, bg=BG).pack(anchor="w")
+
+        W = 660
+        tk.Label(self, text=f"Өдрийн явц  (ажлын цаг {sset.get('work_start')}–{sset.get('work_end')})",
+                 font=(FONT, 12, "bold"), fg=FG, bg=BG).pack(anchor="w", pady=(8, 4))
+        rng = dd.day_range([d["periods"]], sset)
+        cv = tk.Canvas(self, width=W, height=46, bg=BG, highlightthickness=0)
         cv.pack(anchor="w")
-        draw_timeline(cv, 0, 2, W, 22, d["periods"], rng)
+        draw_timeline(cv, 0, 5, W, 22, d["periods"], rng, sset, d["flags"])
         step = 7200 if rng[1] - rng[0] > 10 * 3600 else 3600
         for h in range(rng[0], rng[1] + 1, step):
             x = (h - rng[0]) / max(1, rng[1] - rng[0]) * W
-            cv.create_text(min(max(x, 18), W - 18), 36, text=f"{h // 3600:02d}:00", font=(FONT, 9), fill=MUTED)
+            cv.create_text(min(max(x, 18), W - 18), 38, text=f"{h // 3600:02d}:00", font=(FONT, 9), fill=MUTED)
 
-        tk.Label(self, text="Апп тус бүр", font=(FONT, 12, "bold"), fg=FG, bg=BG).pack(anchor="w", pady=(10, 4))
+        flags = [(k, a, b) for k, a, b in d["flags"] if dd.to_sec(b) - dd.to_sec(a) >= 30]
+        if flags:
+            tk.Label(self, text=f"⚠ Сэжигтэй үеүд ({len(flags)})", font=(FONT, 12, "bold"), fg=ORANGE, bg=BG).pack(
+                anchor="w", pady=(8, 2))
+            txt = "\n".join(f"{a[:5]} – {b[:5]}   {dd.FLAG_TEXT.get(k, k)}  ({fmt_dur(dd.to_sec(b) - dd.to_sec(a))})"
+                            for k, a, b in flags[:8])
+            tk.Label(self, text=txt, font=(FONT, 11), fg=FG, bg=BG, justify="left").pack(anchor="w")
+
+        prod = p["prod"]
+        head = "Апп тус бүр"
+        if pct is not None:
+            head += (f"   ·   бүтээмжтэй {fmt_dur(prod['productive'])}, бүтээмжгүй {fmt_dur(prod['unproductive'])}, "
+                     f"бусад {fmt_dur(prod['neutral'])}")
+        tk.Label(self, text=head, font=(FONT, 12, "bold"), fg=FG, bg=BG).pack(anchor="w", pady=(10, 4))
         apps = d["apps"][:12]
         total = sum(s for _, s in d["apps"]) or 1
         acv = tk.Canvas(self, width=W, height=max(26, 26 * len(apps)), bg=BG, highlightthickness=0)
         acv.pack(anchor="w")
-        for i, (a, s) in enumerate(apps):
+        for i, (a, sec) in enumerate(apps):
             y = i * 26 + 13
+            cat = dd.categorize(a, sset)
             acv.create_text(0, y, anchor="w", text=a[:30], font=(FONT, 11), fill=FG)
-            acv.create_text(310, y, anchor="e", text=fmt_dur(s), font=(FONT, 11), fill=FG)
-            acv.create_rectangle(325, y - 5, 325 + max(2, 260 * s / total), y + 5, fill="#2f81f7", outline="")
-            acv.create_text(W, y, anchor="e", text=f"{s / total * 100:.0f}%", font=(FONT, 10), fill=MUTED)
+            acv.create_text(300, y, anchor="e", text=fmt_dur(sec), font=(FONT, 11), fill=FG)
+            acv.create_rectangle(315, y - 5, 315 + max(2, 230 * sec / total), y + 5, fill=CAT_COLOR[cat], outline="")
+            acv.create_text(W, y, anchor="e", text=f"{sec / total * 100:.0f}% {CAT_TEXT[cat]}", font=(FONT, 10),
+                            fill=MUTED)
         if not apps:
             acv.create_text(0, 13, anchor="w", text="Мэдээлэл алга", font=(FONT, 11), fill=MUTED)
 
-        aways = [(s, e) for st_, s, e in d["periods"] if st_ == "away" and dd.to_sec(e) - dd.to_sec(s) >= 60]
+        aways = [(a, b) for st_, a, b in d["periods"] if st_ == "away" and dd.to_sec(b) - dd.to_sec(a) >= 60]
         tk.Label(self, text=f"Ажлаас гарсан үеүд ({len(aways)})", font=(FONT, 12, "bold"), fg=FG, bg=BG).pack(
             anchor="w", pady=(10, 4))
-        txt = "\n".join(f"{s[:5]} – {e[:5]}   ({fmt_dur(dd.to_sec(e) - dd.to_sec(s))})" for s, e in aways[:14])
-        if len(aways) > 14:
-            txt += f"\n… бас {len(aways) - 14}"
+        txt = "\n".join(f"{a[:5]} – {b[:5]}   ({fmt_dur(dd.to_sec(b) - dd.to_sec(a))})" for a, b in aways[:12])
+        if len(aways) > 12:
+            txt += f"\n… бас {len(aways) - 12}"
         tk.Label(self, text=txt or "Байхгүй", font=(FONT, 11), fg=FG if aways else MUTED, bg=BG,
                  justify="left").pack(anchor="w")
         button(self, "Хаах", self.destroy).pack(anchor="e", pady=(10, 0))

@@ -7,7 +7,7 @@ import os
 import sys
 
 APP = "AjliinButeemj"
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 
 datas = [("assets/face_detection_yunet_2023mar.onnx", "assets")]
 # server.json (Supabase URL + publishable key) байвал програмд багцална → ажилтан юу ч тохируулахгүй
@@ -17,8 +17,8 @@ if os.path.exists("server.json"):
 a = Analysis(
     ["main.py"],
     datas=datas,
-    hiddenimports=[],
-    excludes=["matplotlib", "PIL", "scipy", "pandas", "IPython", "pytest"],
+    hiddenimports=["pystray._win32"] if sys.platform == "win32" else [],
+    excludes=["matplotlib", "scipy", "pandas", "IPython", "pytest"] + ([] if sys.platform == "win32" else ["PIL"]),
     noarchive=False,
 )
 pyz = PYZ(a.pure)

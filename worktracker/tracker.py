@@ -38,6 +38,9 @@ class Tracker:
         self.current_app: str | None = None
         self.camera_ok = False
         self.face_visible = False
+        self.camera_state = "none"  # ok | blocked | static | none
+        self._flag_id: int | None = None
+        self._flag_kind: str | None = None
 
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -93,6 +96,7 @@ class Tracker:
                 "away_seconds": self._today_away,
                 "camera_ok": self.camera_ok,
                 "face_visible": self.face_visible,
+                "camera_state": self.camera_state,
                 "top_apps": top,
             }
 
@@ -127,6 +131,7 @@ class Tracker:
                 log.info("%.0f сек завсар (унтсан?) — тоолохгүй", dt)
                 self._commit_pending(to_work=False)
                 self._flush(now - timedelta(seconds=dt))
+                self._flag_id = self._flag_kind = None
                 if now.date().isoformat() != self._day:
                     self._day = now.date().isoformat()
                     self._load_today()
@@ -140,6 +145,7 @@ class Tracker:
             if day != self._day:
                 self._commit_pending(to_work=False)
                 self._flush(now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(seconds=1))
+                self._flag_id = self._flag_kind = None
                 self._day = day
                 self._load_today()
                 self._open_period(self.status, now.replace(hour=0, minute=0, second=0, microsecond=0))
@@ -152,6 +158,8 @@ class Tracker:
 
             cam_ok = bool(self.presence and self.presence.camera_ok)
             self.camera_ok = cam_ok
+            self.camera_state = self.presence.camera_state if self.presence else "none"
+            self._set_flag(self.camera_state if self.camera_state in ("static", "blocked") else None, now)
             fresh = max(3.0, 2.5 * float(cfg["camera_check_interval_sec"]))
             face = cam_ok and (mono - self.presence.last_face_time) <= fresh
             self.face_visible = face
@@ -225,6 +233,18 @@ class Tracker:
         if self.on_status_change:
             self.on_status_change()
 
+    def _set_flag(self, kind: str | None, now: datetime) -> None:
+        """Сэжигтэй үе (хөдөлгөөнгүй царай / таглагдсан камер) эхэлсэн, дууссаныг бүртгэнэ."""
+        if kind == self._flag_kind:
+            return
+        if self._flag_id is not None:
+            self.storage.update_flag_end(self._flag_id, _hms(now))
+        self._flag_id = self.storage.open_flag(self._day, kind, _hms(now)) if kind else None
+        self._flag_kind = kind
+        log.info("Камерын төлөв: %s", kind or "ok")
+        if self.on_status_change:
+            self.on_status_change()
+
     def _open_period(self, status: str, at: datetime) -> None:
         self._period_id = self.storage.open_period(self._day, status, _hms(at))
 
@@ -238,4 +258,6 @@ class Tracker:
         self._d_first = self._d_last = None
         if self._period_id is not None:
             self.storage.update_period_end(self._period_id, _hms(now))
+        if self._flag_id is not None:
+            self.storage.update_flag_end(self._flag_id, _hms(now))
         self._last_flush = time.monotonic()

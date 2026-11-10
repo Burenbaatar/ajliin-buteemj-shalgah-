@@ -81,7 +81,7 @@ class App:
         self.storage = Storage(storage_path(supa.user_id if supa else None))
         self.presence: PresenceMonitor | None
         try:
-            self.presence = PresenceMonitor(cfg["camera_index"], cfg["camera_check_interval_sec"])
+            self.presence = PresenceMonitor(cfg["camera_index"], cfg["camera_check_interval_sec"], cfg=cfg)
         except Exception:  # noqa: BLE001
             log.exception("Камерын модуль ачаалж чадсангүй")
             self.presence = None

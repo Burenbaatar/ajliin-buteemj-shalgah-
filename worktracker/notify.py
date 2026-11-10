@@ -75,6 +75,26 @@ def send_telegram(cfg: dict, text: str, document: Path | None = None) -> None:
         _tg_call(token, "sendDocument", b"".join(parts), f"multipart/form-data; boundary={boundary}")
 
 
+def tg_find_chats(token: str) -> list[tuple[str, str]]:
+    """Ботыг нэмсэн / боттой бичсэн чатуудын (нэр, id) жагсаалт — админ чат сонгоход."""
+    raw = post_json(f"https://api.telegram.org/bot{token.strip()}/getUpdates", {}, {}, timeout=20)
+    body = json.loads(raw.decode("utf-8"))
+    if not body.get("ok"):
+        raise RuntimeError(f"Telegram: {body.get('description', body)}")
+    chats: dict[str, str] = {}
+    for u in body.get("result", []):
+        for key in ("message", "channel_post", "my_chat_member", "edited_message"):
+            chat = (u.get(key) or {}).get("chat")
+            if chat:
+                name = chat.get("title") or " ".join(x for x in (chat.get("first_name"), chat.get("last_name")) if x)
+                chats[str(chat["id"])] = name or str(chat["id"])
+    return [(name, cid) for cid, name in chats.items()]
+
+
+def tg_send(token: str, chat_id: str, text: str) -> None:
+    _tg_call(token.strip(), "sendMessage", json.dumps({"chat_id": chat_id, "text": text}).encode(), "application/json")
+
+
 def _telegram_text(r: dict) -> str:
     d, e = r["data"], html.escape
     lines = [

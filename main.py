@@ -17,7 +17,8 @@ from datetime import date
 
 from worktracker import APP_TITLE, __version__
 from worktracker.config import data_dir, load_config, load_server
-from worktracker.system import enable_hidpi, ensure_single_instance, set_autostart, setup_logging
+from worktracker.system import (enable_hidpi, ensure_single_instance, set_autostart, setup_logging,
+                                signal_running_instance)
 
 
 def _saved_user_id() -> str | None:
@@ -118,6 +119,7 @@ def main() -> int:
     p.add_argument("--report", nargs="?", const=date.today().isoformat(), metavar="ӨДӨР", help="тайлан үүсгэх")
     p.add_argument("--send", nargs="?", const=date.today().isoformat(), metavar="ӨДӨР", help="тайлан илгээх")
     p.add_argument("--selftest", action="store_true", help="камер нээхгүйгээр бүх модулийг шалгах")
+    p.add_argument("--updated", action="store_true", help=argparse.SUPPRESS)  # шинэчлэлийн дараа эхлэх
     p.add_argument("--version", action="version", version=__version__)
     args, _ = p.parse_known_args()  # macOS .app-д нэмэлт аргумент ирж болно
 
@@ -150,7 +152,10 @@ def main() -> int:
         webbrowser.open(html_path.as_uri())
         return 0
 
-    if not ensure_single_instance():
+    if not ensure_single_instance(wait_sec=20 if args.updated else 0):
+        # Аль хэдийн ажиллаж байна → тэр цонхыг гаргаж ирээд гарна
+        if signal_running_instance():
+            return 0
         msg = "Програм аль хэдийн ажиллаж байна."
         if args.no_gui:
             print(msg)
@@ -172,7 +177,7 @@ def main() -> int:
     enable_hidpi()
     from worktracker.gui import run_gui
 
-    run_gui(cfg)
+    run_gui(cfg, updated=args.updated)
     return 0
 
 

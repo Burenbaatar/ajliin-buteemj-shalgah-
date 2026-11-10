@@ -34,6 +34,10 @@ _MESSAGES = {
     "refresh token not found": "Нэвтрэлт хүчингүй болсон. Дахин нэвтэрнэ үү",
     "signups not allowed": "Шинээр бүртгүүлэх хаалттай байна (админтай холбогдоно уу)",
     "rate limit": "Хэт олон оролдлого. Түр хүлээгээд дахин оролдоно уу",
+    "you can only request this after": "Түр хүлээгээд (1 мин) дахин оролдоно уу",
+    "token has expired or is invalid": "Код буруу эсвэл хугацаа нь дууссан байна",
+    "error sending recovery email": "Имэйл илгээж чадсангүй. Админд хандаж түр нууц үг авна уу",
+    "error sending": "Имэйл илгээж чадсангүй. Админд хандаж түр нууц үг авна уу",
     "duplicate key": "Ийм нэр аль хэдийн байна",
 }
 
@@ -200,6 +204,18 @@ class SupaClient:
                 except (SupaError, NetworkError):
                     pass
             self._clear()
+
+    def request_recovery(self, email: str) -> None:
+        """Нууц үг сэргээх 6 оронтой кодыг имэйлээр илгээнэ (Supabase-ийн Reset Password загварт {{ .Token }})."""
+        self._request("POST", "/auth/v1/recover", {"email": email.strip()}, auth=False)
+
+    def verify_recovery(self, email: str, code: str) -> None:
+        """Имэйлээр ирсэн кодоор нэвтэрнэ (дараа нь update_password-аар шинэ нууц үг тавина)."""
+        with self._lock:
+            self.session = None
+            data = self._request("POST", "/auth/v1/verify",
+                                 {"type": "recovery", "email": email.strip(), "token": code.strip()}, auth=False)
+            self._set_session(data)
 
     def update_password(self, new_password: str) -> None:
         self.ensure_fresh()

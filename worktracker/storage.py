@@ -28,6 +28,15 @@ CREATE TABLE IF NOT EXISTS periods (
     end     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_periods_day ON periods(day);
+-- Сэжигтэй үеүд: static (хөдөлгөөнгүй царай), blocked (камер таглагдсан)
+CREATE TABLE IF NOT EXISTS flags (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    day     TEXT NOT NULL,
+    kind    TEXT NOT NULL,
+    start   TEXT NOT NULL,
+    end     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_flags_day ON flags(day);
 CREATE TABLE IF NOT EXISTS meta (
     key    TEXT PRIMARY KEY,
     value  TEXT
@@ -88,6 +97,15 @@ class Storage:
         with self._lock, self._conn:
             self._conn.execute("UPDATE periods SET end = ? WHERE id = ?", (end, period_id))
 
+    def open_flag(self, day: str, kind: str, start: str) -> int:
+        with self._lock, self._conn:
+            cur = self._conn.execute("INSERT INTO flags(day, kind, start, end) VALUES(?,?,?,?)", (day, kind, start, start))
+            return int(cur.lastrowid)
+
+    def update_flag_end(self, flag_id: int, end: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("UPDATE flags SET end = ? WHERE id = ?", (end, flag_id))
+
     def set_meta(self, key: str, value: str) -> None:
         with self._lock, self._conn:
             self._conn.execute(
@@ -110,6 +128,9 @@ class Storage:
             periods = self._conn.execute(
                 "SELECT status, start, end FROM periods WHERE day = ? ORDER BY start, id", (day,)
             ).fetchall()
+            flags = self._conn.execute(
+                "SELECT kind, start, end FROM flags WHERE day = ? AND end > start ORDER BY start, id", (day,)
+            ).fetchall()
         return {
             "day": day,
             "work_seconds": d["work_seconds"] if d else 0.0,
@@ -118,6 +139,7 @@ class Storage:
             "last_seen": d["last_seen"] if d else None,
             "apps": [(r["app"], r["seconds"]) for r in apps],
             "periods": [dict(r) for r in periods],
+            "flags": [dict(r) for r in flags],
         }
 
     def days_with_data(self) -> list[str]:
