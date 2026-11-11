@@ -1,9 +1,9 @@
-"""Нэвтэрсэн хэрэглэгчийн ажлын мэдээллийг Supabase руу илгээнэ.
+"""Ажилтны өгөгдлийг JSON болгоод админы хуваалцсан хавтас руу хуулна (share.py).
 
 - Минут тутам, мөн төлөв өөрчлөгдөх бүрт: одоогийн төлөв + өнөөдрийн нийт дүн
-- Эхлэхэд: сүүлийн 7 хоногийн дүн (интернэтгүй байсан үеийг нөхөх)
+- Эхлэхэд: сүүлийн 7 хоногийн дүн (хавтас холбогдоогүй байсан үеийг нөхөх)
 - 10 минут тутам: админы өөрчилсөн компанийн тохиргоог татна
-- Хаагдахад: "offline"
+- Програм хаагдахад (quit): эцсийн дүн + "offline"
 Бүх илгээлт idempotent (нийт дүнгээр солино) тул давтан илгээх нь аюулгүй.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ from datetime import date, timedelta
 from .config import COMPANY_KEYS
 from .report import merge_periods
 from .storage import Storage
-from .supa import NetworkError, SupaClient, SupaError
+from .share import NetworkError, ShareClient, ShareError
 
 log = logging.getLogger(__name__)
 
@@ -29,11 +29,11 @@ SETTINGS_EVERY_SEC = 600
 
 
 class CloudSync:
-    def __init__(self, cfg: dict, storage: Storage, tracker, supa: SupaClient):
+    def __init__(self, cfg: dict, storage: Storage, tracker, api: ShareClient):
         self.cfg = cfg
         self.storage = storage
         self.tracker = tracker
-        self.supa = supa
+        self.api = api
         self.interval = max(15.0, float(cfg.get("cloud", {}).get("push_interval_sec", 60)))
         self.device_id = storage.get_meta("device_id")
         if not self.device_id:
@@ -98,19 +98,20 @@ class CloudSync:
 
     def _ok(self) -> None:
         if self.last_error:
-            log.info("Сервертэй дахин холбогдлоо")
+            log.info("Админы хавтастай дахин холбогдлоо")
         self.last_ok = time.monotonic()
         self.last_error = None
 
     def _fail(self, exc: Exception) -> None:
-        msg = exc.friendly if isinstance(exc, (SupaError, NetworkError)) else str(exc)
+        msg = exc.friendly if isinstance(exc, (ShareError, NetworkError)) else str(exc)
+        self._history_done = False  # хавтас эргэж холбогдоход өмнөх өдрүүдийг ч нөхөж бичнэ
         if msg != self.last_error:  # ижил алдааг дахин дахин логлохгүй
-            log.warning("Сервер рүү илгээж чадсангүй: %s (%s)", msg, exc)
+            log.warning("Админы хавтас руу хуулж чадсангүй: %s (%s)", msg, exc)
         self.last_error = msg
 
     def pull_settings(self) -> None:
         """Админы тохиргоог (wt_company) cfg-д хэрэглэнэ. Tracker секунд тутам cfg уншдаг."""
-        rows = self.supa.select("wt_company", "settings", id="eq.1")
+        rows = self.api.select("wt_company", "settings", id="eq.1")
         self._last_settings = time.monotonic()
         settings = (rows[0].get("settings") if rows else None) or {}
         for k in COMPANY_KEYS:
@@ -149,4 +150,4 @@ class CloudSync:
             params["p_current_app"] = snap["app"] if snap else None
             params["p_camera_ok"] = snap["camera_ok"] if snap else None
             params["p_camera_state"] = snap.get("camera_state") if snap else None
-        self.supa.rpc("wt_push", params, timeout=timeout)
+        self.api.rpc("wt_push", params, timeout=timeout)

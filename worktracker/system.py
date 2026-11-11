@@ -114,7 +114,7 @@ def set_autostart(enabled: bool) -> None:
             )
             with key:
                 if enabled:
-                    winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, f'"{sys.executable}"')
+                    winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, f'"{sys.executable}" --background')
                 else:
                     try:
                         winreg.DeleteValue(key, APP_NAME)
@@ -127,7 +127,7 @@ def set_autostart(enabled: bool) -> None:
                 plist.parent.mkdir(parents=True, exist_ok=True)
                 data = {
                     "Label": f"mn.{APP_NAME.lower()}",
-                    "ProgramArguments": ["/usr/bin/open", "-a", str(bundle)],
+                    "ProgramArguments": ["/usr/bin/open", "-a", str(bundle), "--args", "--background"],
                     "RunAtLoad": True,
                 }
                 plist.write_bytes(plistlib.dumps(data))

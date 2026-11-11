@@ -1,13 +1,9 @@
-"""Самбарын өгөгдөл: Supabase-ээс татаж, хүн тус бүрээр нэгтгэж, хуваарь/бүтээмжийг тооцно.
-
-Хэн юуг харах вэ гэдгийг сервер (RLS) шийднэ: ажилтан өөрийгөө, менежер өөрийн хэлтсийг,
-админ бүгдийг. Энд зөвхөн ирсэн өгөгдлийг нэгтгэнэ.
-"""
+"""Самбарын өгөгдөл: админы хуваалцсан хавтаснаас уншиж, хүн тус бүрээр нэгтгэж, хуваарь/бүтээмжийг тооцно."""
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from .supa import SupaClient
+from .share import ShareClient
 
 OFFLINE_AFTER_SEC = 180  # сүүлийн мэдээллээс хойш ийм удаан бол "Офлайн"
 STATUS_TEXT = {"working": "Ажиллаж байна", "away": "Гарсан", "offline": "Офлайн"}
@@ -178,18 +174,18 @@ def flag_totals(flags) -> dict:
 
 
 # ---------------------------------------------------------------------------- татах
-def load(supa: SupaClient, day: str) -> dict:
+def load(api: ShareClient, day: str) -> dict:
     """Самбарт хэрэгтэй бүх өгөгдлийг татна."""
     d0 = (date.fromisoformat(day) - timedelta(days=6)).isoformat()
-    profiles = supa.select("wt_profiles", "user_id,email,full_name,role,department_id,active,created_at",
+    profiles = api.select("wt_profiles", "user_id,email,full_name,department_id,active,created_at",
                            order="full_name")
-    departments = supa.select("wt_departments", "id,name,telegram_chat_id", order="name")
-    live = supa.select("wt_live", "user_id,hostname,platform,status,current_app,camera_ok,camera_state,"
+    departments = api.select("wt_departments", "id,name,telegram_chat_id", order="name")
+    live = api.select("wt_live", "user_id,hostname,platform,status,current_app,camera_ok,camera_state,"
                                   "camera_state_since,status_since,last_seen_at")
-    daily = supa.select("wt_daily", "user_id,hostname,work_seconds,away_seconds,first_seen,last_seen,apps,periods,"
+    daily = api.select("wt_daily", "user_id,hostname,work_seconds,away_seconds,first_seen,last_seen,apps,periods,"
                                     "flags", day=f"eq.{day}")
-    week = supa.select("wt_daily", "user_id,day,work_seconds", day=[f"gte.{d0}", f"lte.{day}"])
-    company = supa.select("wt_company", "settings", id="eq.1")
+    week = api.select("wt_daily", "user_id,day,work_seconds", day=[f"gte.{d0}", f"lte.{day}"])
+    company = api.select("wt_company", "settings", id="eq.1")
     settings = (company[0].get("settings") if company else None) or {}
     return build(profiles, departments, live, daily, week, day, settings=settings)
 
@@ -212,8 +208,6 @@ def build(profiles, departments, live, daily, week, day: str, now: datetime | No
     is_today = day == date.today().isoformat()
     people = []
     for p in profiles:
-        if p["role"] == "pending":
-            continue
         has_day = p["user_id"] in daily_by
         if not p["active"] and not has_day:
             continue
@@ -229,7 +223,6 @@ def build(profiles, departments, live, daily, week, day: str, now: datetime | No
             "user_id": p["user_id"],
             "name": p["full_name"] or p["email"],
             "email": p["email"],
-            "role": p["role"],
             "department": dept_name.get(p["department_id"], ""),
             "department_id": p["department_id"],
             "live": lv,
@@ -251,7 +244,6 @@ def build(profiles, departments, live, daily, week, day: str, now: datetime | No
         "people": people,
         "profiles": profiles,
         "departments": departments,
-        "pending": [p for p in profiles if p["role"] == "pending"],
         "week_days": days,
         "settings": s,
     }

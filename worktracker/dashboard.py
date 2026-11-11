@@ -1,17 +1,17 @@
-"""Програм доторх самбар (бүх эрхэд). Админд нэмэлт табууд: хэрэглэгч, хэлтэс, тохиргоо.
+"""Админы самбар: ажилтнууд, 7 хоног, хэрэглэгчид, хэлтэс, тохиргоо.
 
-Хэн юуг харах нь серверийн RLS-ээр шийдэгдэнэ (ажилтан → өөрийгөө, менежер → хэлтсээ, админ → бүгдийг).
+Зөвхөн админы компьютер дээр, админ нууц үгээр нээгдэнэ. Өгөгдлийг админы хуваалцсан хавтаснаас (share.py) уншина.
 """
 from __future__ import annotations
 
 import csv
 import tkinter as tk
 from datetime import date, datetime, timedelta
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from . import APP_TITLE
 from . import dashdata as dd
-from .supa import ROLE_TEXT, SupaClient
+from .share import ShareClient
 from .uiutil import (BG, BORDER, FG, FONT, GAP, GREEN, MUTED, PENDING_BG, RED, STATUS_COLOR, SURFACE, Bg,
                      bind_wheel, button, fmt_dur, fmt_hm, friendly)
 
@@ -24,7 +24,6 @@ LUNCH = "#d8dee4"
 CAT_COLOR = {"productive": "#1a7f37", "unproductive": "#cf222e", "neutral": "#8c959f"}
 CAT_TEXT = {"productive": "бүтээмжтэй", "unproductive": "бүтээмжгүй", "neutral": "бусад"}
 WEEKDAYS = ["Да", "Мя", "Лх", "Пү", "Ба", "Бя", "Ня"]
-ROLE_BY_TEXT = {v: k for k, v in ROLE_TEXT.items()}
 
 
 def _mix(hex_a: str, hex_b: str, t: float) -> str:
@@ -63,17 +62,16 @@ def draw_timeline(cv: tk.Canvas, x: int, y: int, w: int, h: int, periods, rng, s
 
 
 class Dashboard(tk.Toplevel):
-    def __init__(self, root: tk.Tk, supa: SupaClient, profile: dict, bg: Bg):
+    def __init__(self, root: tk.Tk, api: ShareClient, profile: dict, bg: Bg):
         super().__init__(root)
-        self.supa, self.profile, self.bg = supa, profile, bg
+        self.api, self.profile, self.bg = api, profile, bg
         self.is_admin = profile.get("role") == "admin"
         self.day = date.today()
         self.data: dict | None = None
         self._job = None
         self._loading = False
 
-        role = ROLE_TEXT.get(profile.get("role"), "")
-        self.title(f"Самбар — {profile.get('full_name') or profile.get('email')} ({role})")
+        self.title(f"Самбар — {APP_TITLE}")
         self.configure(bg=BG)
         self.geometry("1140x720")
         self.minsize(900, 500)
@@ -124,7 +122,7 @@ class Dashboard(tk.Toplevel):
         self.day_lbl.config(text=f"{self.day.isoformat()} {names[(self.day.weekday() + 1) % 7]}")
         self.info.config(text="Татаж байна…", fg=MUTED)
         day = self.day.isoformat()
-        self.bg.run(lambda: dd.load(self.supa, day), self._loaded, self._failed)
+        self.bg.run(lambda: dd.load(self.api, day), self._loaded, self._failed)
 
     def _loaded(self, data: dict) -> None:
         self._loading = False
@@ -232,8 +230,6 @@ class Dashboard(tk.Toplevel):
         sus = sum(1 for p in people if p["flag_sec"]["static"] or p["flag_sec"]["blocked"])
         if sus:
             self._kpi("Сэжигтэй", str(sus), ORANGE)
-        if self.is_admin and data["pending"]:
-            self._kpi("Баталгаажуулах", str(len(data["pending"])), "#9a6700")
 
         cv = self.day_body
         cv.delete("all")
@@ -241,7 +237,7 @@ class Dashboard(tk.Toplevel):
         if not people:
             cv.create_text(16, 30, anchor="w", font=(FONT, 12), fill=MUTED,
                            text="Энэ өдөр мэдээлэл алга." if not data["is_today"] else
-                           "Харах хүн алга. Менежер бол админ таныг хэлтэст оноосон эсэхийг шалгана уу.")
+                           "Одоогоор хэн ч бүртгэгдээгүй. Ажилтнуудын компьютерт програмыг суулгаж ажиллуулна уу.")
             cv.configure(scrollregion=(0, 0, total_w, 60))
             return
         rng = dd.day_range((p["day"]["periods"] for p in people), sset)
@@ -255,7 +251,7 @@ class Dashboard(tk.Toplevel):
             warn = p["camera_state"] in ("static", "blocked") or p["flag_sec"]["static"] or p["flag_sec"]["blocked"]
             cv.create_text(x, y + 15, anchor="w", text=("⚠ " if warn else "") + p["name"][:24],
                            font=(FONT, 12, "bold"), fill=ORANGE if warn else FG, tags=tag)
-            sub = " · ".join(t for t in (p["department"], ROLE_TEXT.get(p["role"], "")) if t)
+            sub = " · ".join(t for t in (p["department"], (p["live"] or {}).get("hostname", "")) if t)
             cv.create_text(x, y + 31, anchor="w", text=sub, font=(FONT, 10), fill=MUTED, tags=tag)
             x += COLS[0][1]
             if m["absent"]:
@@ -368,12 +364,13 @@ class Dashboard(tk.Toplevel):
         tab = tk.Frame(self.nb, bg=BG)
         self.users_tab = tab
         self.nb.add(tab, text="Хэрэглэгчид")
-        cols = ("name", "email", "role", "dept", "active")
+        cols = ("name", "host", "dept", "active")
         self.users_tv = ttk.Treeview(tab, columns=cols, show="headings", selectmode="browse")
-        for c, title, w in zip(cols, ("Нэр", "Имэйл", "Эрх", "Хэлтэс", "Төлөв"), (220, 260, 130, 180, 100)):
+        for c, title, w in zip(cols, ("Нэр", "Компьютер (хэрэглэгч@компьютер)", "Хэлтэс", "Төлөв"),
+                               (240, 320, 200, 100)):
             self.users_tv.heading(c, text=title)
             self.users_tv.column(c, width=w, anchor="w")
-        self.users_tv.tag_configure("pending", background=PENDING_BG)
+        self.users_tv.tag_configure("new", background=PENDING_BG)
         self.users_tv.tag_configure("inactive", foreground=MUTED)
         self.users_tv.pack(fill="both", expand=True, padx=4, pady=(8, 4))
         self.users_tv.bind("<<TreeviewSelect>>", self._user_selected)
@@ -381,23 +378,19 @@ class Dashboard(tk.Toplevel):
         form = tk.Frame(tab, bg=BG, pady=8)
         form.pack(fill="x", padx=4)
         self.u_name = tk.StringVar()
-        self.u_role = tk.StringVar()
         self.u_dept = tk.StringVar()
         self.u_active = tk.BooleanVar(value=True)
         tk.Label(form, text="Нэр", bg=BG, fg=MUTED, font=(FONT, 11)).grid(row=0, column=0, sticky="w")
         tk.Entry(form, textvariable=self.u_name, width=24, font=(FONT, 12)).grid(row=1, column=0, padx=(0, 10))
-        tk.Label(form, text="Эрх", bg=BG, fg=MUTED, font=(FONT, 11)).grid(row=0, column=1, sticky="w")
-        ttk.Combobox(form, textvariable=self.u_role, values=list(ROLE_TEXT.values()), state="readonly",
-                     width=16).grid(row=1, column=1, padx=(0, 10))
         tk.Label(form, text="Хэлтэс", bg=BG, fg=MUTED, font=(FONT, 11)).grid(row=0, column=2, sticky="w")
         self.u_dept_cb = ttk.Combobox(form, textvariable=self.u_dept, state="readonly", width=20)
         self.u_dept_cb.grid(row=1, column=2, padx=(0, 10))
         tk.Checkbutton(form, text="Идэвхтэй", variable=self.u_active, bg=BG, font=(FONT, 11)).grid(
             row=1, column=3, padx=(0, 10))
         button(form, "Хадгалах", self._save_user, primary=True).grid(row=1, column=4, padx=(0, 10))
-        button(form, "Түр нууц үг тавих", self._set_password).grid(row=1, column=5, padx=(0, 10))
         button(form, "Цагийн түүхийг устгах", self._delete_user_data).grid(row=1, column=6)
-        tk.Label(tab, text="Шинэ хүн програмаас бүртгүүлэхэд энд шараар гарна. Эрх, хэлтсийг нь оноогоод Хадгалах.",
+        tk.Label(tab, text="Програм суулгасан хүн энд автоматаар гарна (хэлтэсгүй бол шараар). Хэлтсийг нь оноогоод "
+                           "Хадгалах.",
                  bg=BG, fg=MUTED, font=(FONT, 10)).pack(anchor="w", padx=6, pady=(0, 6))
 
     def _render_users(self) -> None:
@@ -405,16 +398,14 @@ class Dashboard(tk.Toplevel):
         sel = tv.selection()
         tv.delete(*tv.get_children())
         dept = {d["id"]: d["name"] for d in self.data["departments"]}
-        profiles = sorted(self.data["profiles"], key=lambda p: (p["role"] != "pending", not p["active"],
+        profiles = sorted(self.data["profiles"], key=lambda p: (p["department_id"] is not None, not p["active"],
                                                                 (p["full_name"] or p["email"]).lower()))
         for p in profiles:
-            tags = ("pending",) if p["role"] == "pending" else (() if p["active"] else ("inactive",))
+            tags = ("inactive",) if not p["active"] else (("new",) if p["department_id"] is None else ())
             tv.insert("", "end", iid=p["user_id"], tags=tags, values=(
-                p["full_name"] or "—", p["email"], ROLE_TEXT.get(p["role"], p["role"]),
-                dept.get(p["department_id"], "—"), "Идэвхтэй" if p["active"] else "Хаалттай"))
+                p["full_name"] or "—", p["email"], dept.get(p["department_id"], "—"),
+                "Идэвхтэй" if p["active"] else "Хаалттай"))
         self.u_dept_cb.configure(values=["—"] + [d["name"] for d in self.data["departments"]])
-        n = len(self.data["pending"])
-        self.nb.tab(self.users_tab, text=f"Хэрэглэгчид ({n} хүлээгдэж буй)" if n else "Хэрэглэгчид")
         if sel and tv.exists(sel[0]):
             tv.selection_set(sel[0])
 
@@ -430,7 +421,6 @@ class Dashboard(tk.Toplevel):
             return
         dept = {d["id"]: d["name"] for d in self.data["departments"]}
         self.u_name.set(p["full_name"])
-        self.u_role.set(ROLE_TEXT["employee"] if p["role"] == "pending" else ROLE_TEXT[p["role"]])
         self.u_dept.set(dept.get(p["department_id"], "—"))
         self.u_active.set(p["active"])
 
@@ -439,44 +429,20 @@ class Dashboard(tk.Toplevel):
         if not p:
             return messagebox.showinfo(APP_TITLE, "Жагсаалтаас хүн сонгоно уу", parent=self)
         dept_id = next((d["id"] for d in self.data["departments"] if d["name"] == self.u_dept.get()), None)
-        role = ROLE_BY_TEXT.get(self.u_role.get(), "employee")
-        if role == "manager" and dept_id is None:
-            if not messagebox.askyesno(APP_TITLE, "Хэлтэсгүй менежер зөвхөн өөрийгөө харна. Үргэлжлүүлэх үү?",
-                                       parent=self):
-                return
-        params = {"p_user": p["user_id"], "p_full_name": self.u_name.get(), "p_role": role,
-                  "p_department_id": dept_id, "p_active": bool(self.u_active.get())}
-        self.bg.run(lambda: self.supa.rpc("wt_admin_update_user", params),
+        params = {"p_user": p["user_id"], "p_full_name": self.u_name.get(), "p_department_id": dept_id,
+                  "p_active": bool(self.u_active.get())}
+        self.bg.run(lambda: self.api.rpc("wt_admin_update_user", params),
                     lambda _: (self.info.config(text="Хадгаллаа", fg=GREEN), self.refresh()),
-                    lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
-
-    def _set_password(self) -> None:
-        p = self._selected_profile()
-        if not p:
-            return messagebox.showinfo(APP_TITLE, "Жагсаалтаас хүн сонгоно уу", parent=self)
-        import secrets
-
-        suggested = "".join(secrets.choice("abcdefghjkmnpqrstuvwxyz23456789") for _ in range(8))
-        pw = simpledialog.askstring(APP_TITLE, f"{p['full_name'] or p['email']}-д тавих түр нууц үг (6+ тэмдэгт).\n"
-                                    "Нэвтэрсний дараа тэр хүн \"Нууц үг солих\"-оор сольж болно.",
-                                    initialvalue=suggested, parent=self)
-        if not pw:
-            return
-        if len(pw) < 6:
-            return messagebox.showwarning(APP_TITLE, "Хамгийн багадаа 6 тэмдэгт", parent=self)
-        self.bg.run(lambda: self.supa.rpc("wt_admin_set_password", {"p_user": p["user_id"], "p_password": pw}),
-                    lambda _: messagebox.showinfo(APP_TITLE, f"Түр нууц үг тавигдлаа:\n\n{pw}\n\n"
-                                                             f"Үүнийг {p['email']}-д хэлнэ үү.", parent=self),
                     lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
 
     def _delete_user_data(self) -> None:
         p = self._selected_profile()
         if not p:
             return
-        if not messagebox.askyesno(APP_TITLE, f"{p['full_name'] or p['email']}-ийн бүх цагийн түүхийг устгаж, "
-                                              "бүртгэлийг хаах уу? Буцаах боломжгүй.", parent=self):
+        if not messagebox.askyesno(APP_TITLE, f"{p['full_name'] or p['email']}-ийн бүх цагийн түүхийг хавтаснаас устгаж, "
+                                              "хаах уу? Буцаах боломжгүй.", parent=self):
             return
-        self.bg.run(lambda: self.supa.rpc("wt_admin_delete_user_data", {"p_user": p["user_id"]}),
+        self.bg.run(lambda: self.api.rpc("wt_admin_delete_user_data", {"p_user": p["user_id"]}),
                     lambda _: self.refresh(),
                     lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
 
@@ -534,7 +500,7 @@ class Dashboard(tk.Toplevel):
         if not name:
             return
         params = {"p_id": dept["id"] if dept else None, "p_name": name}
-        self.bg.run(lambda: self.supa.rpc("wt_admin_save_department", params),
+        self.bg.run(lambda: self.api.rpc("wt_admin_save_department", params),
                     lambda _: (self.dept_name.set(""), self.refresh()),
                     lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
 
@@ -543,7 +509,7 @@ class Dashboard(tk.Toplevel):
         if not dept:
             return messagebox.showinfo(APP_TITLE, "Жагсаалтаас хэлтэс сонгоно уу", parent=self)
         chat = self.dept_chat.get().split("  ·  ")[-1].strip()
-        self.bg.run(lambda: self.supa.rpc("wt_admin_set_department_chat", {"p_id": dept["id"], "p_chat": chat}),
+        self.bg.run(lambda: self.api.rpc("wt_admin_set_department_chat", {"p_id": dept["id"], "p_chat": chat}),
                     lambda _: (self.info.config(text="Чат хадгаллаа", fg=GREEN), self.refresh()),
                     lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
 
@@ -551,7 +517,7 @@ class Dashboard(tk.Toplevel):
         dept = self._dept_sel()
         if not dept or not messagebox.askyesno(APP_TITLE, f"\"{dept['name']}\" хэлтсийг устгах уу?", parent=self):
             return
-        self.bg.run(lambda: self.supa.rpc("wt_admin_delete_department", {"p_id": dept["id"]}),
+        self.bg.run(lambda: self.api.rpc("wt_admin_delete_department", {"p_id": dept["id"]}),
                     lambda _: self.refresh(),
                     lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
 
@@ -651,20 +617,19 @@ class Dashboard(tk.Toplevel):
         field(f, 7, "Програм хаалттай гэж мэдэгдэх (мин)", "alert_offline_min", "spin", from_=5, to=480)
         tk.Label(f, text="1) @BotFather → /newbot → токен.  2) Ботыг групп(үүд)-т нэмнэ.\n"
                          "3) \"Чат олох\" → админы чатыг сонгоно. Хэлтэс бүрийн чатыг Хэлтэс табаас.\n"
-                         "4) Supabase дээр pg_cron, pg_net асаалттай байх (README).\n"
-                         "Шалгалт 5 минут тутам серверт явагдана — компьютер унтраалттай байсан ч.",
+                         "Шалгалт 5 минут тутам энэ (админы) компьютер дээрх програм хийнэ.\n"
+                         "Токен зөвхөн энэ компьютерт хадгалагдана (ажилтнууд харахгүй).",
                  bg=BG, fg=MUTED, font=(FONT, 10), justify="left").grid(row=8, column=0, columnspan=2, sticky="w",
                                                                         pady=(6, 0))
 
         bar = tk.Frame(tab, bg=BG)
         bar.grid(row=10, column=0, columnspan=2, sticky="w", pady=(4, 0))
         button(bar, "Бүх тохиргоог хадгалах", self._save_settings, primary=True).pack(side="left")
-        tk.Label(bar, text="  Бүх компьютерт 10 минутын дотор хүчинтэй болно.", bg=BG, fg=MUTED,
+        tk.Label(bar, text="  Ажилтнуудын компьютерт 10 минутын дотор хүчинтэй болно.", bg=BG, fg=MUTED,
                  font=(FONT, 10)).pack(side="left")
-        self._found_chats: list[tuple[str, str]] = []
         self._settings: dict = {}
-        self.bg.run(lambda: (self.supa.select("wt_company", "settings", id="eq.1"),
-                             self.supa.rpc("wt_admin_telegram_configured")), self._fill_settings)
+        self.bg.run(lambda: (self.api.select("wt_company", "settings", id="eq.1"),
+                             self.api.rpc("wt_admin_telegram_configured")), self._fill_settings)
 
     def _fill_settings(self, result) -> None:
         rows, configured = result
@@ -717,9 +682,9 @@ class Dashboard(tk.Toplevel):
         token = self.s_token.get().strip()
 
         def work():
-            self.supa.rpc("wt_admin_save_settings", {"p_settings": new})
+            self.api.rpc("wt_admin_save_settings", {"p_settings": new})
             if token:
-                self.supa.rpc("wt_admin_set_telegram", {"p_token": token})
+                self.api.rpc("wt_admin_set_telegram", {"p_token": token})
 
         def done(_):
             self._settings = new
@@ -740,7 +705,6 @@ class Dashboard(tk.Toplevel):
                                                   "буцааж уншдаггүй).", parent=self)
 
         def done(chats):
-            self._found_chats = chats
             values = [f"{name}  ·  {cid}" for name, cid in chats]
             self.s_chat_cb.configure(values=values)
             self.dept_chat_cb.configure(values=values)
@@ -772,7 +736,7 @@ class Dashboard(tk.Toplevel):
             return
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
-            w.writerow(["Ажилтан", "Имэйл", "Хэлтэс", "Огноо", "Ажилласан (мин)", "Гарсан (мин)", "Ирсэн", "Явсан",
+            w.writerow(["Ажилтан", "Компьютер", "Хэлтэс", "Огноо", "Ажилласан (мин)", "Гарсан (мин)", "Ирсэн", "Явсан",
                         "Аппууд (мин)"])
             for p in self.data["people"]:
                 d = p["day"]
@@ -793,7 +757,7 @@ class DetailWindow(tk.Toplevel):
         lv = p["live"] or {}
         tk.Label(self, text=p["name"], font=(FONT, 17, "bold"), fg=FG, bg=BG).pack(anchor="w")
         cam = dd.CAMERA_TEXT.get(p.get("camera_state") or "", "—")
-        meta = [dd.STATUS_TEXT[st], p["department"], ROLE_TEXT.get(p["role"], ""), lv.get("hostname", ""),
+        meta = [dd.STATUS_TEXT[st], p["department"], lv.get("hostname", ""),
                 f"камер: {cam}"]
         tk.Label(self, text=" · ".join(x for x in meta if x), font=(FONT, 11), fg=STATUS_COLOR[st], bg=BG).pack(
             anchor="w")

@@ -1,62 +1,82 @@
-"""SQLite өгөгдлийн сан. Нэмэлт сервер шаардлагагүй."""
+"""Компьютер дээрх өгөгдөл — энгийн JSON файлууд (SQL, нэмэлт сан шаардахгүй).
+
+Бүтэц (хэрэглэгч бүрийн хавтаст):
+    worktime/
+        meta.json            — device_id, илгээсэн тайлангийн тэмдэг г.м.
+        days/2026-11-11.json — нэг өдрийн дүн, апп, үеүд, сэжигтэй үеүд
+
+Файл бүрийг түр файлд бичээд os.replace-ээр сольдог тул компьютер гэнэт унтарсан ч эвдрэхгүй.
+"""
 from __future__ import annotations
 
-import sqlite3
+import json
+import os
+import re
 import threading
 from pathlib import Path
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS app_usage (
-    day      TEXT NOT NULL,
-    app      TEXT NOT NULL,
-    seconds  REAL NOT NULL DEFAULT 0,
-    PRIMARY KEY (day, app)
-);
-CREATE TABLE IF NOT EXISTS daily (
-    day           TEXT PRIMARY KEY,
-    work_seconds  REAL NOT NULL DEFAULT 0,
-    away_seconds  REAL NOT NULL DEFAULT 0,
-    first_seen    TEXT,
-    last_seen     TEXT
-);
--- Төлөв тасралтгүй үргэлжилсэн хугацаа: working / away
-CREATE TABLE IF NOT EXISTS periods (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    day     TEXT NOT NULL,
-    status  TEXT NOT NULL,
-    start   TEXT NOT NULL,
-    end     TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_periods_day ON periods(day);
--- Сэжигтэй үеүд: static (хөдөлгөөнгүй царай), blocked (камер таглагдсан)
-CREATE TABLE IF NOT EXISTS flags (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    day     TEXT NOT NULL,
-    kind    TEXT NOT NULL,
-    start   TEXT NOT NULL,
-    end     TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_flags_day ON flags(day);
-CREATE TABLE IF NOT EXISTS meta (
-    key    TEXT PRIMARY KEY,
-    value  TEXT
-);
-"""
+_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _empty_day() -> dict:
+    return {"work_seconds": 0.0, "away_seconds": 0.0, "first_seen": None, "last_seen": None,
+            "apps": {}, "periods": [], "flags": []}
+
+
+def _read(path: Path, default):
+    try:
+        with path.open(encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
+    except (OSError, ValueError):
+        # Эвдэрсэн файлыг хадгалаад шинээр эхэлнэ
+        try:
+            os.replace(path, path.with_suffix(".broken"))
+        except OSError:
+            pass
+        return default
+
+
+def _write(path: Path, data) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 class Storage:
     def __init__(self, path: Path):
         self.path = Path(path)
+        self._days_dir = self.path / "days"
+        self._days_dir.mkdir(parents=True, exist_ok=True)
+        self._meta_path = self.path / "meta.json"
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        with self._lock, self._conn:
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.executescript(SCHEMA)
+        self._meta: dict = _read(self._meta_path, {})
+        self._cache: dict[str, dict] = {}
 
     def close(self) -> None:
-        with self._lock:
-            self._conn.close()
+        pass  # бичилт бүр шууд дискэнд хадгалагддаг
+
+    # ------------------------------------------------------------------ дотоод
+    def _day(self, day: str) -> dict:
+        if not _DAY_RE.match(day):
+            raise ValueError(f"буруу өдөр: {day}")
+        d = self._cache.get(day)
+        if d is None:
+            d = _empty_day()
+            d.update(_read(self._days_dir / f"{day}.json", {}))
+            if len(self._cache) > 40:
+                self._cache.clear()
+            self._cache[day] = d
+        return d
+
+    def _save_day(self, day: str) -> None:
+        _write(self._days_dir / f"{day}.json", self._cache[day])
+
+    @staticmethod
+    def _split_id(item_id: str) -> tuple[str, int]:
+        day, idx = item_id.rsplit("#", 1)
+        return day, int(idx)
 
     # ------------------------------------------------------------------ бичих
     def add_totals(
@@ -68,81 +88,77 @@ class Storage:
         first_seen: str | None,
         last_seen: str | None,
     ) -> None:
-        with self._lock, self._conn:
+        with self._lock:
+            d = self._day(day)
             for app, sec in apps.items():
-                self._conn.execute(
-                    "INSERT INTO app_usage(day, app, seconds) VALUES(?,?,?) "
-                    "ON CONFLICT(day, app) DO UPDATE SET seconds = seconds + excluded.seconds",
-                    (day, app, sec),
-                )
-            self._conn.execute(
-                """INSERT INTO daily(day, work_seconds, away_seconds, first_seen, last_seen)
-                   VALUES(?,?,?,?,?)
-                   ON CONFLICT(day) DO UPDATE SET
-                     work_seconds = work_seconds + excluded.work_seconds,
-                     away_seconds = away_seconds + excluded.away_seconds,
-                     first_seen = COALESCE(MIN(first_seen, excluded.first_seen), first_seen, excluded.first_seen),
-                     last_seen  = COALESCE(MAX(last_seen,  excluded.last_seen),  last_seen,  excluded.last_seen)""",
-                (day, work, away, first_seen, last_seen),
-            )
+                d["apps"][app] = d["apps"].get(app, 0.0) + sec
+            d["work_seconds"] += work
+            d["away_seconds"] += away
+            if first_seen and (d["first_seen"] is None or first_seen < d["first_seen"]):
+                d["first_seen"] = first_seen
+            if last_seen and (d["last_seen"] is None or last_seen > d["last_seen"]):
+                d["last_seen"] = last_seen
+            self._save_day(day)
 
-    def open_period(self, day: str, status: str, start: str) -> int:
-        with self._lock, self._conn:
-            cur = self._conn.execute(
-                "INSERT INTO periods(day, status, start, end) VALUES(?,?,?,?)", (day, status, start, start)
-            )
-            return int(cur.lastrowid)
+    def _open(self, day: str, key: str, label: str, value: str, start: str) -> str:
+        with self._lock:
+            d = self._day(day)
+            d[key].append({label: value, "start": start, "end": start})
+            self._save_day(day)
+            return f"{day}#{len(d[key]) - 1}"
 
-    def update_period_end(self, period_id: int, end: str) -> None:
-        with self._lock, self._conn:
-            self._conn.execute("UPDATE periods SET end = ? WHERE id = ?", (end, period_id))
+    def _close(self, key: str, item_id: str, end: str) -> None:
+        day, idx = self._split_id(item_id)
+        with self._lock:
+            d = self._day(day)
+            if 0 <= idx < len(d[key]):
+                d[key][idx]["end"] = end
+                self._save_day(day)
 
-    def open_flag(self, day: str, kind: str, start: str) -> int:
-        with self._lock, self._conn:
-            cur = self._conn.execute("INSERT INTO flags(day, kind, start, end) VALUES(?,?,?,?)", (day, kind, start, start))
-            return int(cur.lastrowid)
+    def open_period(self, day: str, status: str, start: str) -> str:
+        return self._open(day, "periods", "status", status, start)
 
-    def update_flag_end(self, flag_id: int, end: str) -> None:
-        with self._lock, self._conn:
-            self._conn.execute("UPDATE flags SET end = ? WHERE id = ?", (end, flag_id))
+    def update_period_end(self, period_id: str, end: str) -> None:
+        self._close("periods", period_id, end)
+
+    def open_flag(self, day: str, kind: str, start: str) -> str:
+        return self._open(day, "flags", "kind", kind, start)
+
+    def update_flag_end(self, flag_id: str, end: str) -> None:
+        self._close("flags", flag_id, end)
 
     def set_meta(self, key: str, value: str) -> None:
-        with self._lock, self._conn:
-            self._conn.execute(
-                "INSERT INTO meta(key, value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (key, value),
-            )
+        with self._lock:
+            self._meta[key] = value
+            _write(self._meta_path, self._meta)
 
     # ------------------------------------------------------------------ унших
     def get_meta(self, key: str) -> str | None:
         with self._lock:
-            row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-        return row["value"] if row else None
+            return self._meta.get(key)
 
     def get_day(self, day: str) -> dict:
         with self._lock:
-            d = self._conn.execute("SELECT * FROM daily WHERE day = ?", (day,)).fetchone()
-            apps = self._conn.execute(
-                "SELECT app, seconds FROM app_usage WHERE day = ? ORDER BY seconds DESC", (day,)
-            ).fetchall()
-            periods = self._conn.execute(
-                "SELECT status, start, end FROM periods WHERE day = ? ORDER BY start, id", (day,)
-            ).fetchall()
-            flags = self._conn.execute(
-                "SELECT kind, start, end FROM flags WHERE day = ? AND end > start ORDER BY start, id", (day,)
-            ).fetchall()
-        return {
-            "day": day,
-            "work_seconds": d["work_seconds"] if d else 0.0,
-            "away_seconds": d["away_seconds"] if d else 0.0,
-            "first_seen": d["first_seen"] if d else None,
-            "last_seen": d["last_seen"] if d else None,
-            "apps": [(r["app"], r["seconds"]) for r in apps],
-            "periods": [dict(r) for r in periods],
-            "flags": [dict(r) for r in flags],
-        }
+            d = self._day(day)
+            apps = sorted(d["apps"].items(), key=lambda kv: kv[1], reverse=True)
+            periods = sorted((dict(p) for p in d["periods"]), key=lambda p: p["start"])
+            flags = sorted((dict(f) for f in d["flags"] if f["end"] > f["start"]), key=lambda f: f["start"])
+            return {
+                "day": day,
+                "work_seconds": d["work_seconds"],
+                "away_seconds": d["away_seconds"],
+                "first_seen": d["first_seen"],
+                "last_seen": d["last_seen"],
+                "apps": apps,
+                "periods": periods,
+                "flags": flags,
+            }
 
     def days_with_data(self) -> list[str]:
+        out = []
         with self._lock:
-            rows = self._conn.execute("SELECT day FROM daily WHERE work_seconds > 0 ORDER BY day").fetchall()
-        return [r["day"] for r in rows]
+            for f in self._days_dir.glob("*.json"):
+                day = f.stem
+                if _DAY_RE.match(day) and self._day(day)["work_seconds"] > 0:
+                    out.append(day)
+        return sorted(out)

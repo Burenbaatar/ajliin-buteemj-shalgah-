@@ -67,18 +67,17 @@ class ReportScheduler:
 
 
 def storage_path(user_id: str | None):
-    """Нэвтэрсэн хэрэглэгч бүр тусдаа өгөгдлийн сантай."""
-    return (user_data_dir(user_id) if user_id else data_dir()) / "worktime.db"
+    """Компьютерийн хэрэглэгч бүр тусдаа өгөгдөлтэй."""
+    return (user_data_dir(user_id) if user_id else data_dir()) / "worktime"
 
 
 class App:
-    def __init__(self, cfg: Config, supa=None, profile: dict | None = None):
+    def __init__(self, cfg: Config, api=None, admin: bool = False):
         from .presence import PresenceMonitor  # OpenCV-г хэрэгтэй үед л ачаална
 
         self.cfg = cfg
-        self.supa = supa
-        self.profile = profile
-        self.storage = Storage(storage_path(supa.user_id if supa else None))
+        self.api = api  # ShareClient (админы хуваалцсан хавтас) эсвэл None
+        self.storage = Storage(storage_path(api.user_id if api else None))
         self.presence: PresenceMonitor | None
         try:
             self.presence = PresenceMonitor(cfg["camera_index"], cfg["camera_check_interval_sec"], cfg=cfg)
@@ -89,9 +88,14 @@ class App:
         self.tracker = Tracker(cfg, self.storage, self.presence, on_report_due=self.scheduler)
         self.scheduler.tracker = self.tracker
         self.cloud: CloudSync | None = None
-        if supa is not None:
-            self.cloud = CloudSync(cfg, self.storage, self.tracker, supa)
+        if api is not None:
+            self.cloud = CloudSync(cfg, self.storage, self.tracker, api)
             self.tracker.on_status_change = self.cloud.poke
+        self.alerts = None
+        if admin and api is not None:  # Telegram мэдэгдэл зөвхөн админы компьютер дээрээс
+            from .alerts import AlertRunner
+
+            self.alerts = AlertRunner(api)
         self._stopped = False
 
     def start(self) -> None:
@@ -100,20 +104,24 @@ class App:
         self.tracker.start()
         if self.cloud:
             self.cloud.start()
+        if self.alerts:
+            self.alerts.start()
         log.info("Эхэллээ. Өгөгдөл: %s", self.storage.path)
 
     def cloud_status(self) -> str:
         if self.cloud:
             return self.cloud.status_text()
-        return "Нэвтрээгүй (зөвхөн энэ компьютерт)"
+        return "Тохируулаагүй (зөвхөн энэ компьютерт)"
 
     def stop(self) -> None:
         if self._stopped:
             return
         self._stopped = True
+        if self.alerts:
+            self.alerts.stop()
         self.tracker.stop()
         if self.cloud:
-            self.cloud.stop()  # самбарт "Офлайн" гэж мэдэгдэнэ
+            self.cloud.stop()  # эцсийн дүн + "Офлайн"-г хавтсанд бичнэ
         if self.presence:
             self.presence.stop()
         self.storage.close()

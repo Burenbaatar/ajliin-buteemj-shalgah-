@@ -10,9 +10,9 @@ APP = "AjliinButeemj"
 VERSION = "2.1.0"
 
 datas = [("assets/face_detection_yunet_2023mar.onnx", "assets")]
-# server.json (Supabase URL + publishable key) байвал програмд багцална → ажилтан юу ч тохируулахгүй
-if os.path.exists("server.json"):
-    datas.append(("server.json", "."))
+# share.json (админы хуваалцсан хавтас, --admin-setup үүсгэнэ) байвал програмд багцална → ажилтан юу ч тохируулахгүй
+if os.path.exists("share.json"):
+    datas.append(("share.json", "."))
 
 a = Analysis(
     ["main.py"],

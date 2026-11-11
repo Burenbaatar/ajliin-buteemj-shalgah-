@@ -1,7 +1,9 @@
 """Ажлын бүтээмж — эхлүүлэх файл.
 
-    python main.py                 # цонхтой ажиллуулах (нэвтрэх → цаг бүртгэл, самбар)
-    python main.py --no-gui        # цонхгүй (терминал дээр)
+    python main.py                 # цонхтой ажиллуулах
+    python main.py --background    # цонхгүй, зөвхөн tray (компьютер асахад автоматаар ингэж эхэлнэ)
+    python main.py --admin-setup   # энэ компьютерийг админых болгох (хуваалцсан хавтас, админ нууц үг)
+    python main.py --no-gui        # терминал дээр
     python main.py --camera-test   # камер, царай илрүүлэлтийг шалгах
     python main.py --selftest      # камер нээхгүйгээр бүх модулийг шалгах
     python main.py --report [YYYY-MM-DD]   # тайлан үүсгэж нээх
@@ -10,29 +12,21 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import webbrowser
 from datetime import date
 
 from worktracker import APP_TITLE, __version__
-from worktracker.config import data_dir, load_config, load_server
+from worktracker.config import data_dir, load_admin, load_config, load_share
 from worktracker.system import (enable_hidpi, ensure_single_instance, set_autostart, setup_logging,
                                 signal_running_instance)
 
 
-def _saved_user_id() -> str | None:
-    try:
-        return json.loads((data_dir() / "session.json").read_text(encoding="utf-8"))["user"]["id"]
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
-
-
 def _make_client(cfg):
-    from worktracker.supa import SupaClient
+    from worktracker.share import ShareClient, make_uid
 
-    server = load_server(cfg)
-    return SupaClient(server[0], server[1], data_dir() / "session.json") if server else None
+    info = load_share()
+    return ShareClient(info, make_uid(), cfg["employee_name"]) if info else None
 
 
 def selftest(cfg, log_path) -> int:
@@ -42,7 +36,7 @@ def selftest(cfg, log_path) -> int:
 
     from worktracker import activity
     from worktracker.presence import FaceDetector
-    from worktracker.supa import ROLE_TEXT
+    from worktracker.share import make_uid
 
     ok = True
     lines = [f"{APP_TITLE} {__version__} — {platform.system()} {platform.release()}"]
@@ -58,22 +52,15 @@ def selftest(cfg, log_path) -> int:
             ok = False
             lines.append(f"  {name:<16}: АЛДАА {exc!r}")
 
-    server = load_server(cfg)
-    lines.append(f"  Сервер          : {server[0] if server else 'тохируулаагүй'}")
-    supa = _make_client(cfg)
-    if supa and _saved_user_id():
-        try:
-            if supa.restore():
-                prof = supa.fetch_profile() or {}
-                lines.append(f"  Нэвтэрсэн       : {supa.email} ({ROLE_TEXT.get(prof.get('role'), '?')})")
-            else:
-                lines.append("  Нэвтэрсэн       : үгүй (хадгалсан нэвтрэлт хүчингүй)")
-        except Exception as exc:  # noqa: BLE001
-            ok = False
-            lines.append(f"  Нэвтэрсэн       : АЛДАА {getattr(exc, 'friendly', exc)}")
+    lines.append(f"  Ажилтан         : {cfg['employee_name'] or '(анх нээхэд асууна)'} [{make_uid()}]")
+    client = _make_client(cfg)
+    if client is None:
+        lines.append("  Админы хавтас   : тохируулаагүй (share.json алга)")
     else:
-        lines.append("  Нэвтэрсэн       : үгүй")
+        state = "холбогдсон" if client.available() else "олдсонгүй (админы компьютер унтраалттай?)"
+        lines.append(f"  Админы хавтас   : {client.root} — {state}")
     lines += [
+        f"  Админ компьютер : {'тийм' if load_admin() else 'үгүй'}",
         f"  Тайлан илгээх   : имэйл={cfg['email']['enabled']}, Telegram={cfg['telegram']['enabled']}",
         f"  Тохиргоо        : {cfg.manager_path or cfg.path}",
         f"  Өгөгдөл         : {data_dir()}",
@@ -88,33 +75,24 @@ def selftest(cfg, log_path) -> int:
 
 
 def run_headless(cfg) -> int:
-    import getpass
-
     from worktracker.app import App
-    from worktracker.supa import NetworkError
 
-    supa = _make_client(cfg)
-    if supa is None:
-        print("Сервер тохируулаагүй (server.json). Цонхтой горимоор нэг удаа нээж тохируулна уу.")
-        return 1
-    if not supa.restore():
-        email = input("Имэйл: ").strip()
-        supa.sign_in(email, getpass.getpass("Нууц үг: "))
-    try:
-        profile = supa.fetch_profile()
-    except NetworkError:
-        profile = supa.cached_profile
-    if not profile or profile.get("role") == "pending" or not profile.get("active", True):
-        print("Таны эрх баталгаажаагүй эсвэл хаагдсан байна. Админтай холбогдоно уу.")
-        return 1
-    cfg["employee_name"] = profile.get("full_name") or profile.get("email")
-    App(cfg, supa=supa, profile=profile).run_headless()
+    if not cfg["employee_name"]:
+        cfg["employee_name"] = input("Таны овог нэр: ").strip()
+        cfg.save()
+    client = _make_client(cfg)
+    if client is None:
+        print("Админы хавтас тохируулаагүй (share.json) — зөвхөн энэ компьютерт хадгална.")
+    App(cfg, api=client, admin=load_admin() is not None).run_headless()
     return 0
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description=APP_TITLE)
-    p.add_argument("--no-gui", action="store_true", help="цонхгүй ажиллуулах")
+    p.add_argument("--background", action="store_true", help="цонхгүй, зөвхөн tray дүрстэй эхлэх")
+    p.add_argument("--admin-setup", action="store_true", help="энэ компьютерийг админых болгох")
+    p.add_argument("--admin-setup-system", metavar="FILE", help=argparse.SUPPRESS)  # UAC-аар эхэлсэн хэсэг
+    p.add_argument("--no-gui", action="store_true", help="цонхгүй ажиллуулах (терминал)")
     p.add_argument("--camera-test", action="store_true", help="камерын тест")
     p.add_argument("--report", nargs="?", const=date.today().isoformat(), metavar="ӨДӨР", help="тайлан үүсгэх")
     p.add_argument("--send", nargs="?", const=date.today().isoformat(), metavar="ӨДӨР", help="тайлан илгээх")
@@ -124,6 +102,17 @@ def main() -> int:
     args, _ = p.parse_known_args()  # macOS .app-д нэмэлт аргумент ирж болно
 
     log_path = setup_logging()
+
+    if args.admin_setup_system:
+        from worktracker.admin_setup import run_system_step
+
+        return run_system_step(args.admin_setup_system)
+    if args.admin_setup:
+        from worktracker.admin_setup import run_admin_setup
+
+        enable_hidpi()
+        return run_admin_setup()
+
     cfg = load_config()
 
     if args.camera_test:
@@ -139,9 +128,10 @@ def main() -> int:
         from worktracker.app import storage_path
         from worktracker.notify import send_report
         from worktracker.report import build_report, save_report
+        from worktracker.share import make_uid
         from worktracker.storage import Storage
 
-        storage = Storage(storage_path(_saved_user_id()))
+        storage = Storage(storage_path(make_uid()))
         day = args.send or args.report
         if args.send:
             ok, msg = send_report(cfg, storage, day)
@@ -153,8 +143,8 @@ def main() -> int:
         return 0
 
     if not ensure_single_instance(wait_sec=20 if args.updated else 0):
-        # Аль хэдийн ажиллаж байна → тэр цонхыг гаргаж ирээд гарна
-        if signal_running_instance():
+        # Аль хэдийн ажиллаж байна → (автоматаар эхэлсэн биш бол) тэр цонхыг гаргаж ирээд гарна
+        if args.background or signal_running_instance():
             return 0
         msg = "Програм аль хэдийн ажиллаж байна."
         if args.no_gui:
@@ -177,7 +167,7 @@ def main() -> int:
     enable_hidpi()
     from worktracker.gui import run_gui
 
-    run_gui(cfg, updated=args.updated)
+    run_gui(cfg, updated=args.updated, background=args.background or args.updated)
     return 0
 
 

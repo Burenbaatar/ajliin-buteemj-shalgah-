@@ -51,10 +51,8 @@ DEFAULTS: dict = {
         "bot_token": "",
         "chat_id": "",
     },
-    # Supabase сервер. Ихэвчлэн server.json-оор програмд багцлагдана (README үз).
+    # Админы хуваалцсан хавтас руу хуулах давтамж (секунд). Хавтасны зам share.json-д (README үз).
     "cloud": {
-        "supabase_url": "",
-        "supabase_key": "",
         "push_interval_sec": 60,
     },
 }
@@ -86,11 +84,9 @@ def resource_path(*parts: str) -> Path:
     return base.joinpath(*parts)
 
 
-def data_dir() -> Path:
-    """Өгөгдлийн сан, тайлан, лог хадгалах хавтас."""
-    if not is_frozen():
-        d = app_dir() / "data"
-    elif sys.platform == "win32":
+def installed_data_dir() -> Path:
+    """.exe / .app хувилбарын өгөгдлийн хавтас (%APPDATA%\\AjliinButeemj г.м.)."""
+    if sys.platform == "win32":
         d = Path(os.environ.get("APPDATA", Path.home())) / APP_NAME
     elif sys.platform == "darwin":
         d = Path.home() / "Library" / "Application Support" / APP_NAME
@@ -100,37 +96,91 @@ def data_dir() -> Path:
     return d
 
 
+def data_dir() -> Path:
+    """Өгөгдлийн сан, тайлан, лог хадгалах хавтас. Python-оор ажиллуулахад төслийн data/ хавтас."""
+    if is_frozen():
+        return installed_data_dir()
+    d = app_dir() / "data"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _setup_dirs() -> list[Path]:
+    """Админы тохиргоог хаана хадгалах вэ: Python-оор --admin-setup хийсэн бол .exe-д ч хүчинтэй байхаар хоёуланд."""
+    dirs = [data_dir()]
+    if not is_frozen() and installed_data_dir() != dirs[0]:
+        dirs.append(installed_data_dir())
+    return dirs
+
+
 def reports_dir() -> Path:
     d = data_dir() / "reports"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def load_server(cfg: dict) -> tuple[str, str] | None:
-    """Supabase URL + publishable key.  Дараалал: энэ компьютерт тохируулсан →
-    програмд багцалсан server.json → config.json-ийн cloud хэсэг."""
-    for path in (data_dir() / "server.json", resource_path("server.json")):
+SHARE_FILE = "share.json"
+ADMIN_FILE = "admin.json"
+PBKDF2_ROUNDS = 200_000
+
+
+def load_share() -> dict | None:
+    """Админы хуваалцсан хавтас: {"share": "\\\\ADMIN-PC\\AjliinButeemj", "user": ..., "password": ...,
+    "local_path": ...}.  Дараалал: энэ компьютерт тохируулсан → .exe-ийн хажууд → програмд багцалсан."""
+    for path in (data_dir() / SHARE_FILE, app_dir() / SHARE_FILE, resource_path(SHARE_FILE)):
         try:
             d = _read_json(path)
         except (OSError, ValueError):
             continue
-        if d.get("supabase_url") and d.get("supabase_key"):
-            return str(d["supabase_url"]).strip(), str(d["supabase_key"]).strip()
-    c = cfg.get("cloud", {})
-    if c.get("supabase_url") and c.get("supabase_key"):
-        return str(c["supabase_url"]).strip(), str(c["supabase_key"]).strip()
+        if d.get("share") or d.get("local_path"):
+            return d
     return None
 
 
-def save_server(url: str, key: str) -> None:
-    _write_json(data_dir() / "server.json", {"supabase_url": url.strip().rstrip("/"), "supabase_key": key.strip()})
+def save_share(info: dict) -> None:
+    for d in _setup_dirs():
+        _write_json(d / SHARE_FILE, info)
 
 
-def clear_server() -> None:
+# ---------------------------------------------------------------------------- админ (зөвхөн админы компьютерт)
+def hash_password(password: str, salt: str | None = None) -> str:
+    import hashlib
+    import secrets
+
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), PBKDF2_ROUNDS)
+    return f"pbkdf2${PBKDF2_ROUNDS}${salt}${digest.hex()}"
+
+
+def check_password(password: str, stored: str) -> bool:
+    import hashlib
+    import hmac
+
     try:
-        (data_dir() / "server.json").unlink()
-    except FileNotFoundError:
-        pass
+        _, rounds, salt, digest = stored.split("$")
+        calc = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), int(rounds))
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(calc.hex(), digest)
+
+
+def load_admin() -> dict | None:
+    """Энэ компьютер админых бол {"password": hash, "telegram_bot_token": ...}, үгүй бол None."""
+    try:
+        d = _read_json(data_dir() / ADMIN_FILE)
+    except (OSError, ValueError):
+        return None
+    return d if d.get("password") else None
+
+
+def save_admin(d: dict) -> None:
+    for folder in _setup_dirs():
+        path = folder / ADMIN_FILE
+        _write_json(path, d)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
 
 def user_data_dir(user_id: str) -> Path:
