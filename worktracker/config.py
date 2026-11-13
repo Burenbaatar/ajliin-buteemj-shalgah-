@@ -127,14 +127,23 @@ PBKDF2_ROUNDS = 200_000
 def load_share() -> dict | None:
     """Админы хуваалцсан хавтас: {"share": "\\\\ADMIN-PC\\AjliinButeemj", "user": ..., "password": ...,
     "local_path": ...}.  Дараалал: энэ компьютерт тохируулсан → .exe-ийн хажууд → програмд багцалсан."""
+    found = []
     for path in (data_dir() / SHARE_FILE, app_dir() / SHARE_FILE, resource_path(SHARE_FILE)):
         try:
             d = _read_json(path)
         except (OSError, ValueError):
             continue
         if d.get("share") or d.get("local_path"):
-            return d
-    return None
+            found.append(d)
+    if not found:
+        return None
+    # Ажилтан хаягийг гараар бичсэн бол нэвтрэх нэр/нууц үгийг .exe-ийн хажууд/дотор байгаа share.json-оос нөхнө
+    info = dict(found[0])
+    for other in found[1:]:
+        if str(other.get("share", "")).lower() == str(info.get("share", "")).lower():
+            for k, v in other.items():
+                info.setdefault(k, v)
+    return info
 
 
 def save_share(info: dict) -> None:
