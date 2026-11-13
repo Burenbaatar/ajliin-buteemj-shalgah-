@@ -174,20 +174,41 @@ def flag_totals(flags) -> dict:
 
 
 # ---------------------------------------------------------------------------- татах
-def load(api: ShareClient, day: str) -> dict:
-    """Самбарт хэрэгтэй бүх өгөгдлийг татна."""
+LIVE_COLUMNS = ("user_id,hostname,platform,status,paused,current_app,camera_ok,camera_state,"
+                "camera_state_since,status_since,last_seen_at")
+
+
+def fetch_live(api: ShareClient) -> list[dict]:
+    """Зөвхөн одоогийн төлөв (хүн бүрт нэг жижиг файл) — самбар 2 сек тутам уншина."""
+    return api.select("wt_live", LIVE_COLUMNS)
+
+
+def fetch_raw(api: ShareClient, day: str) -> dict:
+    """Самбарт хэрэгтэй бүх өгөгдлийг татна (нэгтгээгүй)."""
     d0 = (date.fromisoformat(day) - timedelta(days=6)).isoformat()
-    profiles = api.select("wt_profiles", "user_id,email,full_name,department_id,active,created_at",
-                           order="full_name")
-    departments = api.select("wt_departments", "id,name,telegram_chat_id", order="name")
-    live = api.select("wt_live", "user_id,hostname,platform,status,paused,current_app,camera_ok,camera_state,"
-                                  "camera_state_since,status_since,last_seen_at")
-    daily = api.select("wt_daily", "user_id,hostname,work_seconds,away_seconds,first_seen,last_seen,apps,periods,"
-                                    "flags", day=f"eq.{day}")
-    week = api.select("wt_daily", "user_id,day,work_seconds", day=[f"gte.{d0}", f"lte.{day}"])
     company = api.select("wt_company", "settings", id="eq.1")
-    settings = (company[0].get("settings") if company else None) or {}
-    return build(profiles, departments, live, daily, week, day, settings=settings)
+    return {
+        "day": day,
+        "profiles": api.select("wt_profiles", "user_id,email,full_name,department_id,active,created_at",
+                               order="full_name"),
+        "departments": api.select("wt_departments", "id,name,telegram_chat_id", order="name"),
+        "live": fetch_live(api),
+        "daily": api.select("wt_daily", "user_id,hostname,work_seconds,away_seconds,first_seen,last_seen,apps,"
+                                        "periods,flags", day=f"eq.{day}"),
+        "week": api.select("wt_daily", "user_id,day,work_seconds", day=[f"gte.{d0}", f"lte.{day}"]),
+        "settings": (company[0].get("settings") if company else None) or {},
+    }
+
+
+def build_raw(raw: dict, live: list[dict] | None = None) -> dict:
+    """fetch_raw-ийн үр дүнг нэгтгэнэ. live өгвөл шинэ одоогийн төлөвөөр солино."""
+    return build(raw["profiles"], raw["departments"], raw["live"] if live is None else live, raw["daily"],
+                 raw["week"], raw["day"], settings=raw["settings"])
+
+
+def load(api: ShareClient, day: str) -> dict:
+    """Самбарт хэрэгтэй бүх өгөгдлийг татаж нэгтгэнэ."""
+    return build_raw(fetch_raw(api, day))
 
 
 def build(profiles, departments, live, daily, week, day: str, now: datetime | None = None,

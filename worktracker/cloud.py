@@ -1,6 +1,7 @@
 """Ажилтны өгөгдлийг JSON болгоод админы хуваалцсан хавтас руу хуулна (share.py).
 
 - Минут тутам, мөн төлөв өөрчлөгдөх бүрт: одоогийн төлөв + өнөөдрийн нийт дүн
+- Апп солигдоход (1 сек тогтвортой болмогц): зөвхөн одоогийн төлөв — самбарт ≤ 5 сек-д харагдана
 - Эхлэхэд: сүүлийн 7 хоногийн дүн (хавтас холбогдоогүй байсан үеийг нөхөх)
 - 10 минут тутам: админы өөрчилсөн компанийн тохиргоог татна
 - Програм хаагдахад (quit): эцсийн дүн + "offline"
@@ -26,6 +27,7 @@ log = logging.getLogger(__name__)
 HISTORY_DAYS = 7
 MAX_APPS = 60
 SETTINGS_EVERY_SEC = 600
+LIVE_MIN_GAP_SEC = 2.0  # апп хурдан солигдоход live.json-г үүнээс ойр бичихгүй
 
 
 class CloudSync:
@@ -46,6 +48,9 @@ class CloudSync:
         self.last_error: str | None = None
         self._last_settings = 0.0
         self._history_done = False
+        self._full_req = False   # төлөв солигдсон → бүтэн дүнг даруй бичих
+        self._live_req = False   # апп солигдсон → зөвхөн live.json-г даруй бичих
+        self._last_live = 0.0
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -56,7 +61,13 @@ class CloudSync:
         self._thread.start()
 
     def poke(self) -> None:
-        """Төлөв өөрчлөгдсөн — даруй илгээнэ."""
+        """Төлөв өөрчлөгдсөн — өдрийн дүн + одоогийн төлөвийг даруй бичнэ."""
+        self._full_req = True
+        self._wake.set()
+
+    def poke_live(self) -> None:
+        """Идэвхтэй апп солигдсон — зөвхөн одоогийн төлөвийг (live.json) даруй бичнэ (самбарт ≤ 5 сек)."""
+        self._live_req = True
         self._wake.set()
 
     def stop(self) -> None:
@@ -80,21 +91,46 @@ class CloudSync:
     # ------------------------------------------------------------------ дотоод
     def _run(self) -> None:
         self._stop.wait(2.5)  # tracker анхны шалгалтаа хийж амжтал (апп, камерын төлөв)
+        next_full = 0.0
         while not self._stop.is_set():
-            try:
-                if time.monotonic() - self._last_settings >= SETTINGS_EVERY_SEC or not self._last_settings:
-                    self.pull_settings()
-                if not self._history_done:
-                    self._push_history()
-                    self._history_done = True
-                self.push_day(date.today().isoformat(), live=True)
-                self._ok()
-            except Exception as exc:  # noqa: BLE001
-                self._fail(exc)
-            self._wake.wait(self.interval)
+            now = time.monotonic()
+            if self._full_req or now >= next_full:
+                self._full_req = self._live_req = False
+                self._push_full()
+                next_full = time.monotonic() + self.interval
+                self._last_live = time.monotonic()
+            elif self._live_req:
+                gap = LIVE_MIN_GAP_SEC - (now - self._last_live)
+                if gap > 0:  # хурдан солигдож байвал хавтсанд хэт олон бичихгүй
+                    self._stop.wait(gap)
+                    continue
+                self._live_req = False
+                self._push_live()
+                self._last_live = time.monotonic()
+                continue
+            self._wake.wait(max(0.0, next_full - time.monotonic()))
             self._wake.clear()
-            if not self._stop.is_set():
+            if self._full_req and not self._stop.is_set():
                 self._stop.wait(1)  # төлөв тогтворжих хүртэл
+
+    def _push_full(self) -> None:
+        try:
+            if time.monotonic() - self._last_settings >= SETTINGS_EVERY_SEC or not self._last_settings:
+                self.pull_settings()
+            if not self._history_done:
+                self._push_history()
+                self._history_done = True
+            self.push_day(date.today().isoformat(), live=True)
+            self._ok()
+        except Exception as exc:  # noqa: BLE001
+            self._fail(exc)
+
+    def _push_live(self) -> None:
+        try:
+            self.push_live()
+            self._ok()
+        except Exception as exc:  # noqa: BLE001
+            self._fail(exc)
 
     def _ok(self) -> None:
         if self.last_error:
@@ -146,9 +182,24 @@ class CloudSync:
             "p_live": live,
         }
         if live:
-            params["p_status"] = status or (snap["status"] if snap else "working")
-            params["p_current_app"] = snap["app"] if snap else None
-            params["p_camera_ok"] = snap["camera_ok"] if snap else None
-            params["p_camera_state"] = snap.get("camera_state") if snap else None
-            params["p_paused"] = bool(snap.get("paused")) if snap else False
+            params.update(self._live_params(snap, status))
         self.api.rpc("wt_push", params, timeout=timeout)
+
+    def push_live(self) -> None:
+        """Зөвхөн одоогийн төлөв, апп (live.json). Өдрийн дүн минут тутмын push_day-аар бичигдэнэ."""
+        if self.tracker is None:
+            return
+        params = {"p_device_id": self.device_id, "p_hostname": self.hostname, "p_platform": self.platform,
+                  "p_day": date.today().isoformat(), "p_live": True, "p_live_only": True}
+        params.update(self._live_params(self.tracker.snapshot()))
+        self.api.rpc("wt_push", params, timeout=10)
+
+    @staticmethod
+    def _live_params(snap: dict | None, status: str | None = None) -> dict:
+        return {
+            "p_status": status or (snap["status"] if snap else "working"),
+            "p_current_app": snap["app"] if snap else None,
+            "p_camera_ok": snap["camera_ok"] if snap else None,
+            "p_camera_state": snap.get("camera_state") if snap else None,
+            "p_paused": bool(snap.get("paused")) if snap else False,
+        }

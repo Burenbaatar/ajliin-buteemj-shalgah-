@@ -21,6 +21,7 @@ PAUSED_TEXT = "Зогсоосон (завсарлага)"
 TICK_SEC = 1.0
 FLUSH_SEC = 30.0
 MAX_GAP_SEC = 10.0  # үүнээс урт завсар = компьютер унтсан; тоолохгүй
+APP_SETTLE_SEC = 1.0  # апп солигдоод ийм удаан тогтвортой байвал самбар руу даруй илгээнэ
 
 
 def _hms(dt: datetime) -> str:
@@ -34,6 +35,10 @@ class Tracker:
         self.presence = presence
         self.on_report_due = on_report_due  # callback(now)
         self.on_status_change = None  # callback() — төлөв солигдоход (самбар руу даруй илгээх)
+        self.on_app_change = None  # callback() — идэвхтэй апп солигдож APP_SETTLE_SEC тогтвортой болоход
+        self._app_candidate: str | None = None
+        self._app_candidate_since = 0.0
+        self._app_reported: str | None = None
 
         self.status = WORKING
         self.paused = False  # ажилтан "Зогсоох" дарсан: дахин "Үргэлжлүүлэх" дартал гарсанд тооцно
@@ -175,6 +180,7 @@ class Tracker:
             app = None if locked else activity.get_active_app()
             idle = activity.get_idle_seconds()
             self.current_app = app
+            app_changed = not locked and not self.paused and self._app_settled(app, mono)
 
             cam_ok = bool(self.presence and self.presence.camera_ok)
             self.camera_ok = cam_ok
@@ -215,9 +221,21 @@ class Tracker:
             if mono - self._last_flush >= FLUSH_SEC:
                 self._flush(now)
 
+        if app_changed and self.on_app_change:
+            self.on_app_change()
         if self.on_report_due and mono - self._last_report_check >= 60:
             self._last_report_check = mono
             self.on_report_due(now)
+
+    def _app_settled(self, app: str | None, mono: float) -> bool:
+        """Шинэ апп APP_SETTLE_SEC тогтвортой байвал нэг удаа True. Alt+Tab-аар хурдан гүйлгэхийг шүүнэ."""
+        if app != self._app_candidate:
+            self._app_candidate, self._app_candidate_since = app, mono
+            return False
+        if app != self._app_reported and mono - self._app_candidate_since >= APP_SETTLE_SEC:
+            self._app_reported = app
+            return True
+        return False
 
     def _add_work(self, app: str, sec: float, now: datetime) -> None:
         self._d_apps[app] += sec

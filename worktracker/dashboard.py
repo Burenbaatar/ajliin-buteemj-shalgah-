@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import tkinter as tk
 from datetime import date, datetime, timedelta
 from tkinter import filedialog, messagebox, ttk
@@ -15,7 +16,8 @@ from .share import ShareClient
 from .uiutil import (BG, BORDER, FG, FONT, GAP, GREEN, MUTED, PENDING_BG, RED, STATUS_COLOR, SURFACE, Bg,
                      bind_wheel, button, fmt_dur, fmt_hm, friendly)
 
-REFRESH_MS = 30000
+REFRESH_MS = 30000  # бүтэн шинэчлэлт (өдрийн дүн, 7 хоног)
+LIVE_MS = 2000  # одоогийн төлөв, апп — ажилтан апп солиход самбарт ≤ 5 сек-д харагдана
 ROW_H = 44
 COLS = [("Ажилтан", 200), ("Одоо", 175), ("Одоогийн апп", 150), ("Ажилласан", 85), ("Гарсан", 75),
         ("Ирсэн – Явсан", 105), ("Хоцорсон", 80), ("Бүтээмж", 75), ("Өдрийн явц", 240)]
@@ -68,8 +70,12 @@ class Dashboard(tk.Toplevel):
         self.is_admin = profile.get("role") == "admin"
         self.day = date.today()
         self.data: dict | None = None
+        self._raw: dict | None = None    # нэгтгээгүй өгөгдөл — live шинэчлэлтэд дахин ашиглана
+        self._live_sig: str | None = None
         self._job = None
+        self._live_job = None
         self._loading = False
+        self._live_loading = False
 
         self.title(f"Самбар — {APP_TITLE}")
         self.configure(bg=BG)
@@ -104,6 +110,7 @@ class Dashboard(tk.Toplevel):
 
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.refresh()
+        self._live_job = self.after(LIVE_MS, self._live_tick)
 
     # ================================================================== өгөгдөл
     def shift(self, n: int) -> None:
@@ -122,15 +129,17 @@ class Dashboard(tk.Toplevel):
         self.day_lbl.config(text=f"{self.day.isoformat()} {names[(self.day.weekday() + 1) % 7]}")
         self.info.config(text="Татаж байна…", fg=MUTED)
         day = self.day.isoformat()
-        self.bg.run(lambda: dd.load(self.api, day), self._loaded, self._failed)
+        self.bg.run(lambda: dd.fetch_raw(self.api, day), self._loaded, self._failed)
 
-    def _loaded(self, data: dict) -> None:
+    def _loaded(self, raw: dict) -> None:
         self._loading = False
         if not self.winfo_exists():
             return
-        if data["day"] != self.day.isoformat():  # хооронд нь өдөр солигдсон
+        if raw["day"] != self.day.isoformat():  # хооронд нь өдөр солигдсон
             return self.refresh()
-        self.data = data
+        self._raw = raw
+        self._live_sig = json.dumps(raw["live"], sort_keys=True, default=str)
+        self.data = dd.build_raw(raw)
         self.info.config(text="Шинэчилсэн " + datetime.now().strftime("%H:%M:%S"), fg=MUTED)
         self._render_day()
         self._render_week()
@@ -157,9 +166,32 @@ class Dashboard(tk.Toplevel):
         else:
             self._schedule()
 
+    def _live_tick(self) -> None:
+        """2 сек тутам зөвхөн одоогийн төлөв, аппыг уншина (хүн бүрт нэг жижиг файл)."""
+        self._live_job = self.after(LIVE_MS, self._live_tick)
+        if (self._loading or self._live_loading or self._raw is None or self.state() == "iconic"
+                or self._raw["day"] != date.today().isoformat()):
+            return
+        self._live_loading = True
+        self.bg.run(lambda: dd.fetch_live(self.api), self._live_loaded,
+                    lambda _: setattr(self, "_live_loading", False))
+
+    def _live_loaded(self, live: list) -> None:
+        self._live_loading = False
+        if not self.winfo_exists() or self._raw is None or self._loading:
+            return
+        sig = json.dumps(live, sort_keys=True, default=str)
+        if sig == self._live_sig:
+            return  # өөрчлөлтгүй — дахин зурахгүй
+        self._live_sig = sig
+        self._raw["live"] = live
+        self.data = dd.build_raw(self._raw)
+        self._render_day()
+
     def close(self) -> None:
-        if self._job:
-            self.after_cancel(self._job)
+        for job in (self._job, self._live_job):
+            if job:
+                self.after_cancel(job)
         self.destroy()
 
     # ================================================================== Өдөр
@@ -388,9 +420,10 @@ class Dashboard(tk.Toplevel):
         tk.Checkbutton(form, text="Идэвхтэй", variable=self.u_active, bg=BG, font=(FONT, 11)).grid(
             row=1, column=3, padx=(0, 10))
         button(form, "Хадгалах", self._save_user, primary=True).grid(row=1, column=4, padx=(0, 10))
-        button(form, "Цагийн түүхийг устгах", self._delete_user_data).grid(row=1, column=6)
+        button(form, "🗑 Бүрмөсөн устгах", self._remove_user).grid(row=1, column=6, padx=(0, 10))
+        button(form, "Устгасан хүмүүс…", self._show_removed).grid(row=1, column=7)
         tk.Label(tab, text="Програм суулгасан хүн энд автоматаар гарна (хэлтэсгүй бол шараар). Хэлтсийг нь оноогоод "
-                           "Хадгалах.",
+                           "Хадгалах. Ажлаас гарсан хүнийг \"Бүрмөсөн устгах\" — түүний програм дахин бичихгүй.",
                  bg=BG, fg=MUTED, font=(FONT, 10)).pack(anchor="w", padx=6, pady=(0, 6))
 
     def _render_users(self) -> None:
@@ -435,16 +468,56 @@ class Dashboard(tk.Toplevel):
                     lambda _: (self.info.config(text="Хадгаллаа", fg=GREEN), self.refresh()),
                     lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
 
-    def _delete_user_data(self) -> None:
+    def _remove_user(self) -> None:
         p = self._selected_profile()
         if not p:
+            return messagebox.showinfo(APP_TITLE, "Жагсаалтаас хүн сонгоно уу", parent=self)
+        name = p["full_name"] or p["email"]
+        if not messagebox.askyesno(
+                APP_TITLE, f"{name} ({p['email']})-г бүрмөсөн устгах уу?\n\n"
+                           "• Хавтас дахь бүх цагийн түүх нь устна (буцааж авах боломжгүй)\n"
+                           "• Самбар, жагсаалтаас алга болно\n"
+                           "• Тэр компьютерийн програм цаашид өгөгдөл илгээхгүй\n\n"
+                           "Андуурвал \"Устгасан хүмүүс…\"-ээс сэргээж болно (түүх нь буцаж ирэхгүй).",
+                icon="warning", parent=self):
             return
-        if not messagebox.askyesno(APP_TITLE, f"{p['full_name'] or p['email']}-ийн бүх цагийн түүхийг хавтаснаас устгаж, "
-                                              "хаах уу? Буцаах боломжгүй.", parent=self):
-            return
-        self.bg.run(lambda: self.api.rpc("wt_admin_delete_user_data", {"p_user": p["user_id"]}),
-                    lambda _: self.refresh(),
+        self.bg.run(lambda: self.api.rpc("wt_admin_remove_user", {"p_user": p["user_id"]}),
+                    lambda _: (self.info.config(text=f"{name} устгагдлаа", fg=GREEN), self.refresh()),
                     lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
+
+    def _show_removed(self) -> None:
+        self.bg.run(lambda: self.api.company()["removed"], self._removed_loaded,
+                    lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
+
+    def _removed_loaded(self, removed: dict) -> None:
+        if not removed:
+            return messagebox.showinfo(APP_TITLE, "Устгасан хүн алга.", parent=self)
+        win = tk.Toplevel(self)
+        win.title("Устгасан хүмүүс")
+        win.configure(bg=BG, padx=14, pady=12)
+        win.transient(self)
+        tk.Label(win, text="Сэргээвэл тэр хүний програм (ажиллаж байвал) 1 минутын дотор дахин бүртгэгдэнэ.\n"
+                           "Устгасан түүх буцаж ирэхгүй.", bg=BG, fg=MUTED, font=(FONT, 10), justify="left").pack(
+            anchor="w")
+        items = sorted(removed.items(), key=lambda kv: kv[1].get("removed_at", ""), reverse=True)
+        lb = tk.Listbox(win, font=(FONT, 11), width=60, height=min(12, len(items)), activestyle="none")
+        for uid, info in items:
+            lb.insert("end", f"{info.get('full_name') or uid}   ·   {uid}   ·   {str(info.get('removed_at', ''))[:10]}")
+        lb.pack(fill="both", expand=True, pady=8)
+
+        def restore():
+            sel = lb.curselection()
+            if not sel:
+                return
+            uid = items[sel[0]][0]
+            self.bg.run(lambda: self.api.rpc("wt_admin_restore_user", {"p_user": uid}),
+                        lambda _: (win.destroy(), self.info.config(text="Сэргээлээ", fg=GREEN), self.refresh()),
+                        lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=win))
+
+        row = tk.Frame(win, bg=BG)
+        row.pack(anchor="w")
+        button(row, "Сэргээх", restore, primary=True).pack(side="left")
+        button(row, "Хаах", win.destroy).pack(side="left", padx=8)
 
     # ================================================================== Хэлтэс (админ)
     def _build_departments_tab(self) -> None:

@@ -91,6 +91,7 @@ class App:
         if api is not None:
             self.cloud = CloudSync(cfg, self.storage, self.tracker, api)
             self.tracker.on_status_change = self.cloud.poke
+            self.tracker.on_app_change = self.cloud.poke_live
         self.alerts = None
         if admin and api is not None:  # Telegram мэдэгдэл зөвхөн админы компьютер дээрээс
             from .alerts import AlertRunner

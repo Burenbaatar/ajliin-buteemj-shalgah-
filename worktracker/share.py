@@ -38,6 +38,7 @@ _MESSAGES = {
     "name required": "Нэр оруулна уу",
     "department not found": "Хэлтэс олдсонгүй",
     "user not found": "Хүн олдсонгүй",
+    "removed by admin": "Админ таныг жагсаалтаас хассан — өгөгдөл илгээхгүй",
 }
 
 
@@ -201,6 +202,8 @@ class ShareClient:
         self.name = name
         self.is_admin = False  # админ нууц үгээр самбар нээхэд True болно
         self._profile_done = False
+        self._removed = False
+        self._removed_checked = -1e9
 
     # ------------------------------------------------------------------ дотоод
     @property
@@ -228,8 +231,19 @@ class ShareClient:
         c.setdefault("settings", {})
         c.setdefault("departments", [])
         c.setdefault("people", {})
+        c.setdefault("removed", {})  # админ бүрмөсөн устгасан хүмүүс: uid → {full_name, removed_at}
         c.setdefault("next_dept_id", 1)
         return c
+
+    def _is_removed(self) -> bool:
+        """Энэ ажилтныг админ устгасан эсэх (30 сек кэштэй — хавтсыг дэмий уншихгүй)."""
+        now = time.monotonic()
+        if now - self._removed_checked > 30:
+            self._removed_checked = now
+            self._removed = self.user_id in self.company()["removed"]
+            if self._removed:
+                self._profile_done = False  # сэргээвэл profile.json-г (нэр, огноо) дахин бичнэ
+        return self._removed
 
     def _save_company(self, c: dict) -> None:
         write_json(self.root / "company.json", c)
@@ -240,9 +254,18 @@ class ShareClient:
 
     def _person_dirs(self) -> list[Path]:
         try:
-            return [p for p in self.people_dir.iterdir() if p.is_dir()]
+            dirs = [p for p in self.people_dir.iterdir() if p.is_dir()]
         except FileNotFoundError:
             return []
+        removed = self.company()["removed"]
+        out = []
+        for d in dirs:
+            if d.name in removed:  # устгасны дараа програм нь хэдэн секунд бичсэн үлдэгдэл
+                if self.is_admin:
+                    shutil.rmtree(d, ignore_errors=True)
+                continue
+            out.append(d)
+        return out
 
     # ------------------------------------------------------------------ унших
     def select(self, table: str, columns: str = "*", **filters) -> list[dict]:
@@ -337,6 +360,8 @@ class ShareClient:
 
     def _wt_push(self, p: dict) -> str:
         """Ажилтны програм: өөрийн өдрийн дүн, одоогийн төлөвийг өөрийн хавтсанд бичнэ."""
+        if self._is_removed():
+            raise ShareError("removed by admin")
         day = str(p.get("p_day") or "")
         if not DAY_RE.match(day):
             raise ShareError("invalid day")
@@ -359,15 +384,16 @@ class ShareClient:
             })
             self._profile_done = True
 
-        write_json(me / "days" / f"{day}.json", {
-            "hostname": hostname,
-            "work_seconds": _clamp(p.get("p_work_seconds"), 0, 86400),
-            "away_seconds": _clamp(p.get("p_away_seconds"), 0, 86400),
-            "first_seen": _short(p.get("p_first_seen"), 8),
-            "last_seen": _short(p.get("p_last_seen"), 8),
-            "apps": p.get("p_apps") or [], "periods": p.get("p_periods") or [], "flags": p.get("p_flags") or [],
-            "updated_at": now,
-        })
+        if not p.get("p_live_only"):  # апп солигдоход зөвхөн live.json-г бичнэ (өдрийн дүн минут тутам)
+            write_json(me / "days" / f"{day}.json", {
+                "hostname": hostname,
+                "work_seconds": _clamp(p.get("p_work_seconds"), 0, 86400),
+                "away_seconds": _clamp(p.get("p_away_seconds"), 0, 86400),
+                "first_seen": _short(p.get("p_first_seen"), 8),
+                "last_seen": _short(p.get("p_last_seen"), 8),
+                "apps": p.get("p_apps") or [], "periods": p.get("p_periods") or [], "flags": p.get("p_flags") or [],
+                "updated_at": now,
+            })
         if live:
             old = read_json(me / "live.json", {}) or {}
             write_json(me / "live.json", {
@@ -453,19 +479,27 @@ class ShareClient:
         c["settings"] = settings
         self._save_company(c)
 
-    def _wt_admin_delete_user_data(self, p: dict) -> None:
+    def _wt_admin_remove_user(self, p: dict) -> None:
+        """Хүнийг бүрмөсөн устгана: хавтас, бүх түүх, тохиргоо. Тэр компьютерийн програм дахин бичихгүй
+        ("removed" жагсаалт) — андуурвал _wt_admin_restore_user-ээр сэргээнэ."""
         self._require_admin()
         uid = str(p.get("p_user") or "")
         target = self.people_dir / uid
         if not uid or "/" in uid or "\\" in uid or uid in (".", "..") or not target.is_dir():
             raise ShareError("user not found")
-        shutil.rmtree(target / "days", ignore_errors=True)
-        try:
-            (target / "live.json").unlink()
-        except FileNotFoundError:
-            pass
+        prof = read_json(target / "profile.json", {}) or {}
         c = self.company()
-        c["people"].setdefault(uid, {})["active"] = False
+        name = (c["people"].get(uid) or {}).get("full_name") or prof.get("full_name") or uid
+        c["removed"][uid] = {"full_name": name, "removed_at": utcnow_iso()}
+        c["people"].pop(uid, None)
+        self._save_company(c)  # эхлээд хориглоно → устгах үед програм нь дахин бичихгүй
+        shutil.rmtree(target, ignore_errors=True)
+
+    def _wt_admin_restore_user(self, p: dict) -> None:
+        self._require_admin()
+        c = self.company()
+        if c["removed"].pop(str(p.get("p_user") or ""), None) is None:
+            raise ShareError("user not found")
         self._save_company(c)
 
     # Telegram токен хавтсанд биш, админы компьютер дээр (ажилтан харахгүй)
