@@ -7,7 +7,7 @@ import os
 import sys
 
 APP = "AjliinButeemj"
-VERSION = "2.1.0"
+VERSION = "3.1.0"
 
 datas = [("assets/face_detection_yunet_2023mar.onnx", "assets")]
 # share.json (админы хуваалцсан хавтас, --admin-setup үүсгэнэ) байвал програмд багцална → ажилтан юу ч тохируулахгүй

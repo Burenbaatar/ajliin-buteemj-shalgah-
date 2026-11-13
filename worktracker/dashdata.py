@@ -180,7 +180,7 @@ def load(api: ShareClient, day: str) -> dict:
     profiles = api.select("wt_profiles", "user_id,email,full_name,department_id,active,created_at",
                            order="full_name")
     departments = api.select("wt_departments", "id,name,telegram_chat_id", order="name")
-    live = api.select("wt_live", "user_id,hostname,platform,status,current_app,camera_ok,camera_state,"
+    live = api.select("wt_live", "user_id,hostname,platform,status,paused,current_app,camera_ok,camera_state,"
                                   "camera_state_since,status_since,last_seen_at")
     daily = api.select("wt_daily", "user_id,hostname,work_seconds,away_seconds,first_seen,last_seen,apps,periods,"
                                     "flags", day=f"eq.{day}")

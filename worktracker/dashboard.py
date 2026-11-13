@@ -264,7 +264,7 @@ class Dashboard(tk.Toplevel):
                 if p["camera_state"] in ("static", "blocked"):
                     since = "⚠ " + dd.CAMERA_TEXT[p["camera_state"]]
                 elif st != "offline":
-                    since = dd.ago_text(lv.get("status_since"))
+                    since = ("⏸ зогсоосон · " if lv.get("paused") else "") + dd.ago_text(lv.get("status_since"))
                 else:
                     since = (dd.ago_text(lv.get("last_seen_at")) + " өмнө") if lv.get("last_seen_at") else ""
                 cv.create_text(x + 15, y + 31, anchor="w", text=since, font=(FONT, 10),

@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 WORKING = "working"
 AWAY = "away"
 STATUS_TEXT = {WORKING: "Ажиллаж байна", AWAY: "Ажлаас гарсан"}
+PAUSED_TEXT = "Зогсоосон (завсарлага)"
 
 TICK_SEC = 1.0
 FLUSH_SEC = 30.0
@@ -35,6 +36,7 @@ class Tracker:
         self.on_status_change = None  # callback() — төлөв солигдоход (самбар руу даруй илгээх)
 
         self.status = WORKING
+        self.paused = False  # ажилтан "Зогсоох" дарсан: дахин "Үргэлжлүүлэх" дартал гарсанд тооцно
         self.current_app: str | None = None
         self.camera_ok = False
         self.face_visible = False
@@ -90,7 +92,8 @@ class Tracker:
             top = sorted(apps.items(), key=lambda kv: kv[1], reverse=True)
             return {
                 "status": self.status,
-                "status_text": STATUS_TEXT[self.status],
+                "status_text": PAUSED_TEXT if self.paused else STATUS_TEXT[self.status],
+                "paused": self.paused,
                 "app": self.current_app,
                 "work_seconds": self._today_work + pending,
                 "away_seconds": self._today_away,
@@ -103,6 +106,23 @@ class Tracker:
     def flush_now(self) -> None:
         with self._lock:
             self._flush(datetime.now())
+
+    def set_paused(self, paused: bool) -> None:
+        """Гараар зогсоох / үргэлжлүүлэх. Зогссон хугацаа "гарсан"-д тооцогдоно (ажилласан цаг нэмэгдэхгүй)."""
+        with self._lock:
+            if paused == self.paused:
+                return
+            now = datetime.now()
+            self.paused = paused
+            if paused:
+                pending = self._commit_pending(to_work=False)
+                if self.status == WORKING:
+                    self._switch(AWAY, now - timedelta(seconds=pending))
+            else:
+                self._last_evidence = time.monotonic()  # дараагийн шалгалт хүн байгаа эсэхийг шийднэ
+            log.info("Гараар %s", "зогсоолоо" if paused else "үргэлжлүүллээ")
+        if self.on_status_change:
+            self.on_status_change()
 
     # ------------------------------------------------------------------ дотоод
     def _load_today(self) -> None:
@@ -136,8 +156,8 @@ class Tracker:
                     self._day = now.date().isoformat()
                     self._load_today()
                 self._last_evidence = mono
-                self.status = WORKING
-                self._open_period(WORKING, now)
+                self.status = AWAY if self.paused else WORKING
+                self._open_period(self.status, now)
                 return
 
             # Шөнө дунд өдөр солигдох
@@ -165,7 +185,7 @@ class Tracker:
             self.face_visible = face
             input_recent = idle is not None and idle <= float(cfg["input_presence_window_sec"])
 
-            if locked:
+            if locked or self.paused:
                 evidence = False
             elif cam_ok:
                 evidence = face or (bool(cfg["input_counts_as_presence"]) and input_recent)
@@ -183,7 +203,7 @@ class Tracker:
                 self._add_work(app_key, dt, now)
                 if self.status != WORKING:
                     self._switch(WORKING, now)
-            elif self.status == WORKING and not locked and (mono - self._last_evidence) <= grace:
+            elif self.status == WORKING and not locked and not self.paused and (mono - self._last_evidence) <= grace:
                 # Түр харагдахгүй байна — шийдвэрийг хойшлуулна
                 self._pending.append((app_key, dt))
             else:

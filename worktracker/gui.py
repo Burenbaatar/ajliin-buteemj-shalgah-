@@ -26,15 +26,16 @@ from .uiutil import BG, FG, FONT, GREEN, MUTED, RED, Bg, button, clear, fmt_dur,
 log = logging.getLogger(__name__)
 TOP_N = 6
 CAMERA_WARN = {"blocked": "⚠ Камер таглагдсан байна", "static": "⚠ Хөдөлгөөнгүй царай (зураг?)"}
+PAUSED_COLOR = "#9a6700"
 
 
 class Tray:
     """Цонх хаахад програм арын горимд үргэлжилнэ.
     Windows: системийн tray дүрс (pystray).  macOS: Dock дүрс дээр дарж нээнэ, ⌘Q бүрэн хаана."""
 
-    COLORS = {"working": (26, 127, 55), "away": (207, 34, 46), "offline": (140, 149, 159)}
+    COLORS = {"working": (26, 127, 55), "away": (207, 34, 46), "offline": (140, 149, 159), "paused": (154, 103, 0)}
 
-    def __init__(self, root: tk.Tk, bg: Bg, on_show, on_quit, on_dashboard=None):
+    def __init__(self, root: tk.Tk, bg: Bg, on_show, on_quit, on_dashboard=None, on_pause=None, is_paused=None):
         self.icon = None
         self._status = None
         if sys.platform == "win32":
@@ -42,6 +43,9 @@ class Tray:
                 import pystray
 
                 items = [pystray.MenuItem("Нээх", lambda: bg.call_soon(on_show), default=True)]
+                if on_pause and is_paused:
+                    items.append(pystray.MenuItem(lambda _: "▶ Үргэлжлүүлэх" if is_paused() else "⏸ Зогсоох",
+                                                  lambda: bg.call_soon(on_pause)))
                 if on_dashboard:
                     items.append(pystray.MenuItem("Самбар (админ)", lambda: bg.call_soon(on_dashboard)))
                 items.append(pystray.MenuItem("Програмыг хаах", lambda: bg.call_soon(on_quit)))
@@ -76,6 +80,13 @@ class Tray:
             self.icon.title = f"{APP_TITLE} — {text}"
         except Exception:  # noqa: BLE001
             pass
+
+    def update_menu(self) -> None:
+        if self.icon is not None:
+            try:
+                self.icon.update_menu()
+            except Exception:  # noqa: BLE001
+                pass
 
     def notify(self, text: str) -> None:
         if self.icon is not None:
@@ -152,6 +163,8 @@ class MainWindow:
         btns.pack(fill="x")
         if admin and app.api:
             button(btns, "Самбар", self.open_dashboard, primary=True).pack(side="left", padx=(0, 8))
+        self.pause_btn = button(btns, "⏸ Зогсоох", self.toggle_pause)
+        self.pause_btn.pack(side="left", padx=(0, 8))
         button(btns, "Тайлан", self.open_report).pack(side="left")
         if channels_enabled(app.cfg):
             self.send_btn = button(btns, "Илгээх", self.send_report)
@@ -168,10 +181,11 @@ class MainWindow:
 
     def refresh(self) -> None:
         s = self.app.tracker.snapshot()
-        color = GREEN if s["status"] == WORKING else RED
+        color = PAUSED_COLOR if s["paused"] else (GREEN if s["status"] == WORKING else RED)
         for w in (self.banner, self.status_lbl, self.timer_lbl, self.timer_caption):
             w.config(bg=color)
-        self.status_lbl.config(text=f"● {s['status_text']}")
+        self.status_lbl.config(text=f"{'⏸' if s['paused'] else '●'} {s['status_text']}")
+        self.pause_btn.config(text="▶ Үргэлжлүүлэх" if s["paused"] else "⏸ Зогсоох")
         self.timer_lbl.config(text=_hms(s["work_seconds"]))
         self.rows["away"].config(text=fmt_dur(s["away_seconds"]))
         self.rows["app"].config(text=(s["app"] or "-")[:32])
@@ -183,7 +197,7 @@ class MainWindow:
             cam = CAMERA_WARN[s["camera_state"]]
         self.rows["cam"].config(text=cam, fg="#bc4c00" if s.get("camera_state") in CAMERA_WARN else FG)
         if self.tray:
-            self.tray.set_status(s["status"], s["status_text"])
+            self.tray.set_status("paused" if s["paused"] else s["status"], s["status_text"])
         if updater.supported() and self.app.cfg.get("auto_update", True) and \
                 time.monotonic() - self._last_update_check > updater.CHECK_EVERY_SEC:
             self._last_update_check = time.monotonic()
@@ -202,7 +216,7 @@ class MainWindow:
     # ------------------------------------------------------------------ шинэчлэл
     def check_update(self, auto: bool = False) -> None:
         """auto=True (эхлэх үед, эсвэл цонх нуугдсан үед): асуулгүйгээр татаж суулгана."""
-        self.bg.run(lambda: updater.check(self.app.cfg.get("update_repo") or updater.DEFAULT_REPO),
+        self.bg.run(lambda: updater.check_any(self.app.cfg, self.app.api),
                     lambda info: self._update_found(info, auto),
                     lambda e: log.info("Шинэчлэл шалгаж чадсангүй: %s", e))
 
@@ -307,6 +321,17 @@ class MainWindow:
         self.send_btn.config(state="normal", text="Илгээх")
         (messagebox.showinfo if ok else messagebox.showwarning)(APP_TITLE, msg, parent=self.root)
 
+    def toggle_pause(self) -> None:
+        """Гараар зогсоох / үргэлжлүүлэх. Зогссон хугацааг "гарсан"-д тооцно."""
+        self.app.tracker.set_paused(not self.app.tracker.paused)
+        if self.tray:
+            self.tray.update_menu()
+            self.tray.notify("Цаг тоолох зогслоо. \"Үргэлжлүүлэх\" дарж эхлүүлнэ." if self.app.tracker.paused
+                             else "Цаг тоолох үргэлжиллээ.")
+        if self._job:
+            self.root.after_cancel(self._job)
+        self.refresh()
+
     def change_name(self) -> None:
         name = ask_name(self.root, self.app.cfg["employee_name"])
         if not name:
@@ -388,7 +413,9 @@ def run_gui(cfg, updated: bool = False, background: bool = False) -> None:
 
     admin = load_admin() is not None
     tray = Tray(root, bg, show, quit_app,
-                on_dashboard=(lambda: state["main"].open_dashboard()) if admin else None)
+                on_dashboard=(lambda: state["main"].open_dashboard()) if admin else None,
+                on_pause=lambda: state["main"].toggle_pause() if "main" in state else None,
+                is_paused=lambda: "app" in state and state["app"].tracker.paused)
     start_instance_listener(lambda: bg.call_soon(show))
 
     first_run = not cfg["employee_name"]

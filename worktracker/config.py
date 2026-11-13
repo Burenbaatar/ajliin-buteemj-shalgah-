@@ -33,7 +33,8 @@ DEFAULTS: dict = {
     "autostart": True,
     # Цонхыг үргэлж бусад цонхны дээр харуулах
     "always_on_top": False,
-    # GitHub Releases-ээс автоматаар шинэчлэх (.exe / .app хувилбарт)
+    # Автоматаар шинэчлэх (.exe / .app): админы хавтасны update/ хавтаснаас (build.py --publish).
+    # update_repo-д "эзэмшигч/repo" өгвөл оронд нь GitHub Releases-ээс татна.
     "auto_update": True,
     "update_repo": "",
     "email": {

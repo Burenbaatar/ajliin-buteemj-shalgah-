@@ -373,7 +373,7 @@ class ShareClient:
             write_json(me / "live.json", {
                 "hostname": hostname, "platform": _short(p.get("p_platform") or "", 50),
                 "status": status, "current_app": _short(p.get("p_current_app"), 200),
-                "camera_ok": p.get("p_camera_ok"), "camera_state": cam,
+                "camera_ok": p.get("p_camera_ok"), "camera_state": cam, "paused": bool(p.get("p_paused")),
                 "camera_state_since": now if old.get("camera_state") != cam or not old
                 else old.get("camera_state_since"),
                 "status_since": now if old.get("status") != status else old.get("status_since", now),

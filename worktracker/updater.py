@@ -1,8 +1,12 @@
-"""Автомат шинэчлэл: GitHub Releases-ээс шинэ хувилбар татаж, програмыг солиод дахин эхлүүлнэ.
+"""Автомат шинэчлэл: шинэ хувилбарыг татаж, програмыг солиод дахин эхлүүлнэ.
+
+Эх үүсвэр (анхдагч): админы хуваалцсан хавтас — update/version.json + update/AjliinButeemj.exe.
+    Админ `python build.py --publish` ажиллуулахад тэнд байршина. Тэр хавтсыг ажилтнууд зөвхөн уншина.
+Эх үүсвэр (заавал биш): config.json-д "update_repo" өгсөн бол GitHub Releases.
 
 - Windows: ажиллаж буй .exe-г .old.exe болгож нэрлээд (Windows үүнийг зөвшөөрдөг) шинээр сольно.
 - macOS:   шинэ .app-г задлаад хуучныг .old болгож сольно.
-Татсан файлыг SHA-256-аар (release дээрх .sha256 файлаар) шалгана.
+Татсан файлыг SHA-256-аар шалгана.
 """
 from __future__ import annotations
 
@@ -23,8 +27,9 @@ from .config import data_dir, is_frozen
 from .net import ssl_context
 
 log = logging.getLogger(__name__)
-DEFAULT_REPO = "Burenbaatar/ajliin-buteemj-shalgah-"
-CHECK_EVERY_SEC = 6 * 3600
+CHECK_EVERY_SEC = 30 * 60
+UPDATE_DIR = "update"
+VERSION_FILE = "version.json"
 
 
 def version_tuple(v: str) -> tuple[int, ...]:
@@ -49,7 +54,33 @@ def _get(url: str, timeout: float = 15):
     return urllib.request.urlopen(req, timeout=timeout, context=ssl_context())
 
 
-def check(repo: str = DEFAULT_REPO, api: str = "https://api.github.com", current: str = __version__) -> dict | None:
+def check_any(cfg: dict, share) -> dict | None:
+    """config.json-д update_repo өгсөн бол GitHub, үгүй бол админы хавтас."""
+    repo = str(cfg.get("update_repo") or "").strip()
+    return check(repo) if repo else check_share(share)
+
+
+def check_share(share, current: str = __version__) -> dict | None:
+    """Админы хавтасны update/ дотор шинэ хувилбар байвал {"version", "path", "size", "sha256"}."""
+    if share is None or not share.available():
+        return None
+    folder = share.root / UPDATE_DIR
+    try:
+        meta = json.loads((folder / VERSION_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    name = asset_name()
+    version = str(meta.get("version", ""))
+    if not name or meta.get("file", name) != name or version_tuple(version) <= version_tuple(current):
+        return None
+    path = folder / name
+    if not path.is_file() or not meta.get("sha256"):
+        return None
+    return {"version": version, "path": str(path), "size": int(meta.get("size") or 0),
+            "sha256": str(meta["sha256"]).lower()}
+
+
+def check(repo: str, api: str = "https://api.github.com", current: str = __version__) -> dict | None:
     """Шинэ хувилбар байвал {"version", "url", "size", "sha_url"}, үгүй бол None."""
     with _get(f"{api}/repos/{repo}/releases/latest", timeout=10) as resp:
         data = json.loads(resp.read().decode("utf-8"))
@@ -73,8 +104,10 @@ def download(info: dict, progress=None, dest_dir: Path | None = None) -> Path:
     part = final.with_suffix(final.suffix + ".part")
     h = hashlib.sha256()
     done = 0
-    with _get(info["url"], timeout=60) as resp, open(part, "wb") as f:
-        total = int(resp.headers.get("Content-Length") or info.get("size") or 0)
+    source = open(info["path"], "rb") if info.get("path") else _get(info["url"], timeout=60)
+    with source as resp, open(part, "wb") as f:
+        total = int(info.get("size") or 0) if info.get("path") else \
+            int(resp.headers.get("Content-Length") or info.get("size") or 0)
         while True:
             chunk = resp.read(256 * 1024)
             if not chunk:
@@ -87,9 +120,11 @@ def download(info: dict, progress=None, dest_dir: Path | None = None) -> Path:
     if info.get("size") and done != info["size"]:
         part.unlink(missing_ok=True)
         raise RuntimeError(f"Татсан файлын хэмжээ таарсангүй ({done} != {info['size']})")
-    if info.get("sha_url"):
+    expected = info.get("sha256")
+    if not expected and info.get("sha_url"):
         with _get(info["sha_url"]) as resp:
             expected = resp.read().decode("utf-8").split()[0].strip().lower()
+    if expected:
         if h.hexdigest() != expected:
             part.unlink(missing_ok=True)
             raise RuntimeError("SHA-256 шалгалт таарсангүй — файл гэмтсэн")
