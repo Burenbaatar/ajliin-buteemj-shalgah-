@@ -7,8 +7,8 @@
     python build.py --publish    # бүтээгээд админы хавтасны update/ руу байршуулна → ажилтнууд өөрөө шинэчлэгдэнэ
 
 Үр дүн:
-    Windows -> dist/AjliinButeemj.exe (+ .sha256)
-    macOS   -> dist/AjliinButeemj-mac/AjliinButeemj.app, dist/AjliinButeemj-mac.zip (+ .sha256)
+    Windows -> dist/AjliinButeemj.exe
+    macOS   -> dist/AjliinButeemj-mac/AjliinButeemj.app, dist/AjliinButeemj-mac.zip
 
 Анхаар: .exe-г зөвхөн Windows дээр, .app-г зөвхөн Mac дээр бүтээнэ.
 """
@@ -58,16 +58,6 @@ def ensure_venv() -> Path:
     return py
 
 
-def sha256_file(path: Path) -> Path:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    out = path.with_name(path.name + ".sha256")
-    out.write_text(h.hexdigest(), encoding="ascii")
-    return out
-
-
 def copy_config(dest_dir: Path) -> None:
     # Имэйл/Telegram тохируулсан бол config.json-г програмын хажууд хуулна
     cfg = ROOT / "config.json"
@@ -81,7 +71,6 @@ def package_windows() -> Path:
     if not exe.exists():
         sys.exit(f"АЛДАА: {exe} үүссэнгүй")
     copy_config(DIST)
-    sha256_file(exe)
     return exe
 
 
@@ -98,7 +87,6 @@ def package_mac() -> Path:
     run("ditto", app, pkg / app.name)
     copy_config(pkg)
     run("ditto", "-c", "-k", "--keepParent", pkg, zip_path)
-    sha256_file(zip_path)
     return zip_path
 
 

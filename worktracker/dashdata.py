@@ -206,11 +206,6 @@ def build_raw(raw: dict, live: list[dict] | None = None) -> dict:
                  raw["week"], raw["day"], settings=raw["settings"])
 
 
-def load(api: ShareClient, day: str) -> dict:
-    """Самбарт хэрэгтэй бүх өгөгдлийг татаж нэгтгэнэ."""
-    return build_raw(fetch_raw(api, day))
-
-
 def build(profiles, departments, live, daily, week, day: str, now: datetime | None = None,
           settings: dict | None = None) -> dict:
     s = settings_with_defaults(settings)

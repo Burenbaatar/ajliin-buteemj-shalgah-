@@ -150,7 +150,17 @@ class PresenceMonitor:
         self._dark_since: float | None = None
         self._cap = None
         self._stop = threading.Event()
+        self._paused = threading.Event()   # "Зогсоох" дарсан → камерыг хааж, гэрлийг унтраана
+        self._reopen_now = False           # "Үргэлжлүүлэх" дарсан → 10 сек хүлээлгүй шууд нээнэ
         self._thread: threading.Thread | None = None
+
+    def set_paused(self, paused: bool) -> None:
+        """Зогсоосон үед камер огт ажиллахгүй. Камерын thread ≤ 1 сек-д хааж / дахин нээнэ."""
+        if paused:
+            self._paused.set()
+        else:
+            self._reopen_now = True
+            self._paused.clear()
 
     @property
     def camera_state(self) -> str:
@@ -219,13 +229,27 @@ class PresenceMonitor:
     def _run(self) -> None:
         failures = 0
         while not self._stop.is_set():
+            if self._paused.is_set():
+                if self._cap is not None:
+                    self._cap.release()  # камерын гэрэл унтарна
+                    self._cap = None
+                    log.info("Зогсоосон: камерыг хаалаа")
+                self.camera_ok = False
+                self.blocked = self.face_static = False
+                self._dark_since = None
+                self.liveness.reset()
+                self._stop.wait(0.3)
+                continue
             if self._cap is None:
-                if self._stop.wait(10):
+                if not self._reopen_now and self._stop.wait(10):
                     break
+                if self._paused.is_set():
+                    continue
+                reopened, self._reopen_now = self._reopen_now, False
                 self._cap = _open_camera(self.camera_index)
                 self.camera_ok = self._cap is not None
                 if self.camera_ok:
-                    log.info("Камер дахин холбогдлоо")
+                    log.info("Камер дахин нээгдлээ" if reopened else "Камер дахин холбогдлоо")
                 continue
 
             self._cap.grab()  # буферт хуучирсан кадрыг алгасна

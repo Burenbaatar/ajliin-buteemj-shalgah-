@@ -126,6 +126,8 @@ class Tracker:
             else:
                 self._last_evidence = time.monotonic()  # дараагийн шалгалт хүн байгаа эсэхийг шийднэ
             log.info("Гараар %s", "зогсоолоо" if paused else "үргэлжлүүллээ")
+        if self.presence:
+            self.presence.set_paused(paused)  # зогсоосон үед камерыг бүрэн хаана (гэрэл унтарна)
         if self.on_status_change:
             self.on_status_change()
 

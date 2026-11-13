@@ -1,12 +1,11 @@
-"""Автомат шинэчлэл: шинэ хувилбарыг татаж, програмыг солиод дахин эхлүүлнэ.
+"""Автомат шинэчлэл: админы хавтаснаас шинэ хувилбарыг татаж, програмыг солиод дахин эхлүүлнэ.
 
-Эх үүсвэр (анхдагч): админы хуваалцсан хавтас — update/version.json + update/AjliinButeemj.exe.
+Эх үүсвэр: админы хуваалцсан хавтас — update/version.json + update/AjliinButeemj.exe.
     Админ `python build.py --publish` ажиллуулахад тэнд байршина. Тэр хавтсыг ажилтнууд зөвхөн уншина.
-Эх үүсвэр (заавал биш): config.json-д "update_repo" өгсөн бол GitHub Releases.
 
 - Windows: ажиллаж буй .exe-г .old.exe болгож нэрлээд (Windows үүнийг зөвшөөрдөг) шинээр сольно.
 - macOS:   шинэ .app-г задлаад хуучныг .old болгож сольно.
-Татсан файлыг SHA-256-аар шалгана.
+Татсан файлыг version.json дахь SHA-256-аар шалгана.
 """
 from __future__ import annotations
 
@@ -19,12 +18,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import urllib.request
 from pathlib import Path
 
 from . import __version__
 from .config import data_dir, is_frozen
-from .net import ssl_context
 
 log = logging.getLogger(__name__)
 CHECK_EVERY_SEC = 30 * 60
@@ -48,18 +45,6 @@ def supported() -> bool:
     return is_frozen() and asset_name() is not None
 
 
-def _get(url: str, timeout: float = 15):
-    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
-                                               "User-Agent": f"AjliinButeemj/{__version__}"})
-    return urllib.request.urlopen(req, timeout=timeout, context=ssl_context())
-
-
-def check_any(cfg: dict, share) -> dict | None:
-    """config.json-д update_repo өгсөн бол GitHub, үгүй бол админы хавтас."""
-    repo = str(cfg.get("update_repo") or "").strip()
-    return check(repo) if repo else check_share(share)
-
-
 def check_share(share, current: str = __version__) -> dict | None:
     """Админы хавтасны update/ дотор шинэ хувилбар байвал {"version", "path", "size", "sha256"}."""
     if share is None or not share.available():
@@ -80,36 +65,18 @@ def check_share(share, current: str = __version__) -> dict | None:
             "sha256": str(meta["sha256"]).lower()}
 
 
-def check(repo: str, api: str = "https://api.github.com", current: str = __version__) -> dict | None:
-    """Шинэ хувилбар байвал {"version", "url", "size", "sha_url"}, үгүй бол None."""
-    with _get(f"{api}/repos/{repo}/releases/latest", timeout=10) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    tag = str(data.get("tag_name", ""))
-    if version_tuple(tag) <= version_tuple(current):
-        return None
-    assets = {a["name"]: a for a in data.get("assets", [])}
-    name = asset_name()
-    if name not in assets:
-        log.info("Шинэ хувилбар %s байна, гэхдээ %s файл алга", tag, name)
-        return None
-    sha = assets.get(name + ".sha256")
-    return {"version": tag.lstrip("v"), "url": assets[name]["browser_download_url"],
-            "size": int(assets[name].get("size") or 0), "sha_url": sha["browser_download_url"] if sha else None}
-
-
 def download(info: dict, progress=None, dest_dir: Path | None = None) -> Path:
+    """Хавтаснаас хуулж, хэмжээ + SHA-256-г шалгана (өөр хүн сольсон/гэмтсэн бол татгалзана)."""
     dest_dir = dest_dir or (data_dir() / "update")
     dest_dir.mkdir(parents=True, exist_ok=True)
     final = dest_dir / (asset_name() or "update.bin")
     part = final.with_suffix(final.suffix + ".part")
     h = hashlib.sha256()
     done = 0
-    source = open(info["path"], "rb") if info.get("path") else _get(info["url"], timeout=60)
-    with source as resp, open(part, "wb") as f:
-        total = int(info.get("size") or 0) if info.get("path") else \
-            int(resp.headers.get("Content-Length") or info.get("size") or 0)
+    total = int(info.get("size") or 0)
+    with open(info["path"], "rb") as src, open(part, "wb") as f:
         while True:
-            chunk = resp.read(256 * 1024)
+            chunk = src.read(256 * 1024)
             if not chunk:
                 break
             f.write(chunk)
@@ -117,17 +84,12 @@ def download(info: dict, progress=None, dest_dir: Path | None = None) -> Path:
             done += len(chunk)
             if progress:
                 progress(done, total)
-    if info.get("size") and done != info["size"]:
+    if total and done != total:
         part.unlink(missing_ok=True)
-        raise RuntimeError(f"Татсан файлын хэмжээ таарсангүй ({done} != {info['size']})")
-    expected = info.get("sha256")
-    if not expected and info.get("sha_url"):
-        with _get(info["sha_url"]) as resp:
-            expected = resp.read().decode("utf-8").split()[0].strip().lower()
-    if expected:
-        if h.hexdigest() != expected:
-            part.unlink(missing_ok=True)
-            raise RuntimeError("SHA-256 шалгалт таарсангүй — файл гэмтсэн")
+        raise RuntimeError(f"Татсан файлын хэмжээ таарсангүй ({done} != {total})")
+    if h.hexdigest() != info["sha256"]:
+        part.unlink(missing_ok=True)
+        raise RuntimeError("SHA-256 шалгалт таарсангүй — файл гэмтсэн эсвэл солигдсон")
     os.replace(part, final)
     return final
 

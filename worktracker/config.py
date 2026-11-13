@@ -34,9 +34,7 @@ DEFAULTS: dict = {
     # Цонхыг үргэлж бусад цонхны дээр харуулах
     "always_on_top": False,
     # Автоматаар шинэчлэх (.exe / .app): админы хавтасны update/ хавтаснаас (build.py --publish).
-    # update_repo-д "эзэмшигч/repo" өгвөл оронд нь GitHub Releases-ээс татна.
     "auto_update": True,
-    "update_repo": "",
     "email": {
         "enabled": False,
         "smtp_host": "smtp.gmail.com",

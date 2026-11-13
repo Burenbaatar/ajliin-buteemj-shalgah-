@@ -80,14 +80,21 @@ def default_name() -> str:
 
 
 def read_json(path: Path, default=None):
-    try:
-        with path.open(encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return default
-    except ValueError:
-        log.warning("Эвдэрсэн JSON: %s", path)
-        return default
+    # Өөр компьютер яг энэ агшинд файлыг сольж (os.replace) байвал Windows түр PermissionError өгдөг → дахин оролдоно
+    for attempt in range(6):
+        try:
+            with path.open(encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return default
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+        except ValueError:
+            log.warning("Эвдэрсэн JSON: %s", path)
+            return default
+    return default
 
 
 def write_json(path: Path, data) -> None:

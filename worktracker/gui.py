@@ -192,7 +192,9 @@ class MainWindow:
         self.timer_lbl.config(text=_hms(s["work_seconds"]))
         self.rows["away"].config(text=fmt_dur(s["away_seconds"]))
         self.rows["app"].config(text=(s["app"] or "-")[:32])
-        if not s["camera_ok"]:
+        if s["paused"]:
+            cam = "Унтраасан (зогсоосон үед)"
+        elif not s["camera_ok"]:
             cam = "Олдсонгүй (гар/хулганаар шалгана)"
         else:
             cam = "Холбогдсон · " + ("царай харагдаж байна" if s["face_visible"] else "царай харагдахгүй")
@@ -219,7 +221,7 @@ class MainWindow:
     # ------------------------------------------------------------------ шинэчлэл
     def check_update(self, auto: bool = False) -> None:
         """auto=True (эхлэх үед, эсвэл цонх нуугдсан үед): асуулгүйгээр татаж суулгана."""
-        self.bg.run(lambda: updater.check_any(self.app.cfg, self.app.api),
+        self.bg.run(lambda: updater.check_share(self.app.api),
                     lambda info: self._update_found(info, auto),
                     lambda e: log.info("Шинэчлэл шалгаж чадсангүй: %s", e))
 
