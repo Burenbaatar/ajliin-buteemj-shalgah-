@@ -143,7 +143,7 @@ class MainWindow:
         for i, (key, caption) in enumerate([("name", "Ажилтан"), ("away", "Ажлаас гарсан"), ("app", "Одоогийн апп"),
                                             ("cam", "Камер"), ("cloud", "Админы хавтас")]):
             tk.Label(body, text=caption, font=(FONT, 11), fg=MUTED, bg=BG).grid(row=i, column=0, sticky="w", pady=2)
-            lbl = tk.Label(body, text="", font=(FONT, 11), fg=FG, bg=BG, anchor="w", width=28)
+            lbl = tk.Label(body, text="", font=(FONT, 11), fg=FG, bg=BG, anchor="w", width=34)
             lbl.grid(row=i, column=1, sticky="w", padx=(10, 0), pady=2)
             self.rows[key] = lbl
         self.rows["name"].config(text=app.cfg["employee_name"] or "-")
@@ -176,6 +176,9 @@ class MainWindow:
         link = tk.Label(foot, text="Нэр солих", font=(FONT, 10, "underline"), fg="#0969da", bg=BG, cursor="hand2")
         link.pack(side="right", padx=16)
         link.bind("<Button-1>", lambda _: self.change_name())
+        # ✕ нь tray руу нуудаг; бүрэн хаахад доорх улаан товч (эсвэл tray → "Програмыг хаах")
+        self.exit_btn = button(root, "Програмаас гарах", self.on_close, danger=True, font=(FONT, 11, "bold"))
+        self.exit_btn.pack(fill="x", padx=16, pady=(0, 12), ipady=2)
         self.update_btn = button(root, "", self.install_update, primary=True)
         self.refresh()
 
@@ -227,7 +230,7 @@ class MainWindow:
         if auto:
             return self._install(info)
         self.update_btn.config(text=f"⬇ Шинэ хувилбар {info['version']} — Шинэчлэх")
-        self.update_btn.pack(fill="x", padx=16, pady=(0, 8))
+        self.update_btn.pack(fill="x", padx=16, pady=(0, 8), before=self.exit_btn)
         if self.tray:
             self.tray.notify(f"Шинэ хувилбар {info['version']} бэлэн боллоо")
 

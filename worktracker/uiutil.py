@@ -77,10 +77,15 @@ def clear(container: tk.Misc) -> None:
             w.destroy()
 
 
-def button(parent, text, command, primary=False, **kw) -> tk.Button:
-    # macOS дээр tk.Button-ий өнгө өөрчлөгддөггүй тул энгийн товч; Windows дээр өнгөтэй
+def button(parent, text, command, primary=False, danger=False, **kw) -> tk.Button:
+    # macOS дээр tk.Button-ий дэвсгэр өнгө өөрчлөгддөггүй тул энгийн товч; Windows дээр өнгөтэй
     opts = {"text": text, "command": command, "padx": 10, "pady": 3, "cursor": "hand2"}
-    if primary and sys.platform == "win32":
+    if danger:
+        if sys.platform == "win32":
+            opts.update(bg=RED, fg="white", activebackground="#a40e26", activeforeground="white", relief="flat")
+        else:
+            opts.update(fg=RED)
+    elif primary and sys.platform == "win32":
         opts.update(bg=ACCENT, fg="white", activebackground="#0550ae", activeforeground="white", relief="flat")
     opts.update(kw)
     return tk.Button(parent, **opts)
