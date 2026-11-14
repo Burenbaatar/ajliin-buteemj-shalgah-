@@ -93,10 +93,16 @@ class App:
             self.tracker.on_status_change = self.cloud.poke
             self.tracker.on_app_change = self.cloud.poke_live
         self.alerts = None
-        if admin and api is not None:  # Telegram мэдэгдэл зөвхөн админы компьютер дээрээс
+        self.hub = None
+        root = getattr(api, "root", None)
+        if admin and root is not None and root.is_dir():
+            # Админы компьютер: Telegram мэдэгдэл + ажилтнуудын програм өгөгдлөө илгээх сервер
             from .alerts import AlertRunner
+            from .config import HUB_PORT, load_hub
+            from .hub import Hub
 
             self.alerts = AlertRunner(api)
+            self.hub = Hub(root, int((load_hub() or {}).get("port", HUB_PORT)))
         self._stopped = False
 
     def start(self) -> None:
@@ -107,6 +113,8 @@ class App:
             self.cloud.start()
         if self.alerts:
             self.alerts.start()
+        if self.hub:
+            self.hub.start()
         log.info("Эхэллээ. Өгөгдөл: %s", self.storage.path)
 
     def cloud_status(self) -> str:
@@ -118,6 +126,8 @@ class App:
         if self._stopped:
             return
         self._stopped = True
+        if self.hub:
+            self.hub.stop()
         if self.alerts:
             self.alerts.stop()
         self.tracker.stop()

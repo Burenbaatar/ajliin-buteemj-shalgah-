@@ -1,6 +1,7 @@
-"""Автомат шинэчлэл: админы хавтаснаас шинэ хувилбарыг татаж, програмыг солиод дахин эхлүүлнэ.
+"""Автомат шинэчлэл: админы компьютерээс шинэ хувилбарыг татаж, програмыг солиод дахин эхлүүлнэ.
 
-Эх үүсвэр: админы хуваалцсан хавтас — update/version.json + update/AjliinButeemj.exe.
+Эх үүсвэр: админы компьютерийн update/version.json + update/AjliinButeemj.exe — ажилтанд серверээр (hub.py),
+админд өөрийн хавтаснаас; 3.1.x хувилбарууд хуучин хуваалцсан хавтаснаас (шилжилтийн үед).
     Админ `python build.py --publish` ажиллуулахад тэнд байршина. Тэр хавтсыг ажилтнууд зөвхөн уншина.
 
 - Windows: ажиллаж буй .exe-г .old.exe болгож нэрлээд (Windows үүнийг зөвшөөрдөг) шинээр сольно.
@@ -46,27 +47,43 @@ def supported() -> bool:
 
 
 def check_share(share, current: str = __version__) -> dict | None:
-    """Админы хавтасны update/ дотор шинэ хувилбар байвал {"version", "path", "size", "sha256"}."""
-    if share is None or not share.available():
-        return None
-    folder = share.root / UPDATE_DIR
-    try:
-        meta = json.loads((folder / VERSION_FILE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    """Шинэ хувилбар байвал {"version", "path" | "url", "size", "sha256"}.
+    Ажилтан: админы компьютерийн серверээс (client.HubClient). Админ: өөрийн хавтаснаас (share.ShareClient)."""
+    if share is None:
         return None
     name = asset_name()
+    if hasattr(share, "update_meta"):  # сервер
+        meta = share.update_meta()
+        source = {"url": share.update_url(name)} if name else {}
+    else:  # хавтас
+        if not share.available():
+            return None
+        folder = share.root / UPDATE_DIR
+        try:
+            meta = json.loads((folder / VERSION_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if name and not (folder / name).is_file():
+            return None
+        source = {"path": str(folder / name)} if name else {}
+    if not meta or not name:
+        return None
     version = str(meta.get("version", ""))
-    if not name or meta.get("file", name) != name or version_tuple(version) <= version_tuple(current):
+    if meta.get("file", name) != name or version_tuple(version) <= version_tuple(current) or not meta.get("sha256"):
         return None
-    path = folder / name
-    if not path.is_file() or not meta.get("sha256"):
-        return None
-    return {"version": version, "path": str(path), "size": int(meta.get("size") or 0),
-            "sha256": str(meta["sha256"]).lower()}
+    return {"version": version, **source, "size": int(meta.get("size") or 0), "sha256": str(meta["sha256"]).lower()}
+
+
+def _open_source(info: dict):
+    if info.get("path"):
+        return open(info["path"], "rb")
+    import urllib.request
+
+    return urllib.request.urlopen(info["url"], timeout=60)  # дотоод сүлжээ, SHA-256-аар шалгана
 
 
 def download(info: dict, progress=None, dest_dir: Path | None = None) -> Path:
-    """Хавтаснаас хуулж, хэмжээ + SHA-256-г шалгана (өөр хүн сольсон/гэмтсэн бол татгалзана)."""
+    """Хавтас / серверээс татаж, хэмжээ + SHA-256-г шалгана (өөр хүн сольсон/гэмтсэн бол татгалзана)."""
     dest_dir = dest_dir or (data_dir() / "update")
     dest_dir.mkdir(parents=True, exist_ok=True)
     final = dest_dir / (asset_name() or "update.bin")
@@ -74,7 +91,7 @@ def download(info: dict, progress=None, dest_dir: Path | None = None) -> Path:
     h = hashlib.sha256()
     done = 0
     total = int(info.get("size") or 0)
-    with open(info["path"], "rb") as src, open(part, "wb") as f:
+    with _open_source(info) as src, open(part, "wb") as f:
         while True:
             chunk = src.read(256 * 1024)
             if not chunk:

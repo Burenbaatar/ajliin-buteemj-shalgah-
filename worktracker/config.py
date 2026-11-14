@@ -150,6 +150,30 @@ def save_share(info: dict) -> None:
         _write_json(d / SHARE_FILE, info)
 
 
+# ---------------------------------------------------------------------------- админы компьютерийн сервер (hub)
+HUB_FILE = "hub.json"
+HUB_PORT = 47815
+
+
+def load_hub() -> dict | None:
+    """Админы компьютерийн сервер: {"host": "DESKTOP-…", "port": 47815}. Нууц зүйлгүй — exe-д багцлагдана.
+    Дараалал: энэ компьютерт тохируулсан → .exe-ийн хажууд → програмд багцалсан."""
+    for path in (data_dir() / HUB_FILE, app_dir() / HUB_FILE, resource_path(HUB_FILE)):
+        try:
+            d = _read_json(path)
+        except (OSError, ValueError):
+            continue
+        if d.get("host"):
+            d.setdefault("port", HUB_PORT)
+            return d
+    return None
+
+
+def save_hub(info: dict) -> None:
+    for d in _setup_dirs():
+        _write_json(d / HUB_FILE, info)
+
+
 # ---------------------------------------------------------------------------- админ (зөвхөн админы компьютерт)
 def hash_password(password: str, salt: str | None = None) -> str:
     import hashlib

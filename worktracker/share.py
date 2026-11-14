@@ -29,6 +29,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+DEVICES_FILE = "devices.json"  # ажилтан бүрийн хувийн түлхүүр (hub.py) — зөвхөн админы компьютерт
 STATUSES = ("working", "away", "offline")
 CAMERA_STATES = ("ok", "blocked", "static", "none")
 
@@ -39,6 +40,10 @@ _MESSAGES = {
     "department not found": "Хэлтэс олдсонгүй",
     "user not found": "Хүн олдсонгүй",
     "removed by admin": "Админ таныг жагсаалтаас хассан — өгөгдөл илгээхгүй",
+    "device key mismatch": "Төхөөрөмжийн түлхүүр таарахгүй — админ \"Түлхүүр шинэчлэх\" дарна уу",
+    "already registered": "Энэ нэрээр өөр төхөөрөмж бүртгэлтэй — админ \"Түлхүүр шинэчлэх\" дарна уу",
+    "clock skew": "Компьютерийн цаг буруу байна — Windows-ийн цагаа тохируулна уу",
+    "rate limit": "Хэт олон оролдлого — түр хүлээгээд дахин оролдоно",
 }
 
 
@@ -54,7 +59,7 @@ class ShareError(Exception):
 class NetworkError(Exception):
     """Хуваалцсан хавтас руу хандаж чадсангүй."""
 
-    friendly = "Админы хавтас олдсонгүй (админы компьютер асаалттай, нэг сүлжээнд байгаа эсэхийг шалгана уу)"
+    friendly = "Админы компьютер олдсонгүй (асаалттай, нэг сүлжээнд байгаа эсэхийг шалгана уу)"
 
 
 # ============================================================================ туслах
@@ -310,6 +315,7 @@ class ShareClient:
                     "email": d.name,
                     "full_name": over.get("full_name") or prof.get("full_name") or "",
                     "hostname": prof.get("hostname", ""),
+                    "version": prof.get("version", ""),
                     "role": "employee",
                     "department_id": over.get("department_id"),
                     "active": over.get("active", True),
@@ -386,8 +392,9 @@ class ShareClient:
         if not self._profile_done:
             old = read_json(me / "profile.json", {}) or {}
             write_json(me / "profile.json", {
-                "full_name": self.name[:100], "windows_user": default_name(), "hostname": hostname,
-                "platform": _short(p.get("p_platform") or "", 50), "created_at": old.get("created_at") or now,
+                "full_name": self.name[:100], "windows_user": _short(p.get("p_windows_user"), 100) or default_name(),
+                "hostname": hostname, "platform": _short(p.get("p_platform") or "", 50),
+                "version": _short(p.get("p_version"), 20) or "", "created_at": old.get("created_at") or now,
             })
             self._profile_done = True
 
@@ -500,6 +507,7 @@ class ShareClient:
         c["removed"][uid] = {"full_name": name, "removed_at": utcnow_iso()}
         c["people"].pop(uid, None)
         self._save_company(c)  # эхлээд хориглоно → устгах үед програм нь дахин бичихгүй
+        self._forget_device(uid)
         shutil.rmtree(target, ignore_errors=True)
 
     def _wt_admin_restore_user(self, p: dict) -> None:
@@ -508,6 +516,21 @@ class ShareClient:
         if c["removed"].pop(str(p.get("p_user") or ""), None) is None:
             raise ShareError("user not found")
         self._save_company(c)
+
+    def _wt_admin_reset_device(self, p: dict) -> None:
+        """Ажилтны хувийн түлхүүрийг мартана → тэр компьютер дараагийн холболтоор шинэ түлхүүр авна
+        (програмаа дахин суулгасан, компьютер сольсон үед)."""
+        self._require_admin()
+        if not self._forget_device(str(p.get("p_user") or "")):
+            raise ShareError("user not found")
+
+    def _forget_device(self, uid: str) -> bool:
+        path = self.root / DEVICES_FILE
+        devices = read_json(path, {}) or {}
+        if devices.pop(uid, None) is None:
+            return False
+        write_json(path, devices)
+        return True
 
     # Telegram токен хавтсанд биш, админы компьютер дээр (ажилтан харахгүй)
     def _wt_admin_set_telegram(self, p: dict) -> None:

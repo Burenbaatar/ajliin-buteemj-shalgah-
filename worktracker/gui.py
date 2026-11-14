@@ -16,10 +16,11 @@ from tkinter import messagebox, simpledialog
 
 from . import APP_TITLE, updater
 from .app import App
-from .config import check_password, load_admin, load_share, save_share
+from .client import make_client
+from .config import HUB_PORT, check_password, load_admin, save_hub
 from .notify import channels_enabled
 from .report import build_report, save_report
-from .share import ShareClient, default_name, make_uid
+from .share import default_name
 from .tracker import WORKING
 from .uiutil import BG, FG, FONT, GREEN, MUTED, RED, Bg, button, clear, fmt_dur, friendly
 
@@ -141,7 +142,7 @@ class MainWindow:
         body.pack(fill="both", expand=True)
         self.rows: dict[str, tk.Label] = {}
         for i, (key, caption) in enumerate([("name", "Ажилтан"), ("away", "Ажлаас гарсан"), ("app", "Одоогийн апп"),
-                                            ("cam", "Камер"), ("cloud", "Админы хавтас")]):
+                                            ("cam", "Камер"), ("cloud", "Админ руу")]):
             tk.Label(body, text=caption, font=(FONT, 11), fg=MUTED, bg=BG).grid(row=i, column=0, sticky="w", pady=2)
             lbl = tk.Label(body, text="", font=(FONT, 11), fg=FG, bg=BG, anchor="w", width=34)
             lbl.grid(row=i, column=1, sticky="w", padx=(10, 0), pady=2)
@@ -378,16 +379,17 @@ def ask_name(root: tk.Misc, current: str = "") -> str | None:
             return name
 
 
-def ask_share(root: tk.Misc) -> dict | None:
-    """share.json байхгүй үед (заавал биш): админы хавтасны замыг гараар оруулна."""
-    path = simpledialog.askstring(
-        APP_TITLE, "Админы хуваалцсан хавтасны зам (жишээ: \\\\ADMIN-PC\\AjliinButeemj).\n"
-                   "Админ share.json-г програмд багцалсан бол энэ асуулт гарахгүй.\n"
+def ask_hub(root: tk.Misc) -> dict | None:
+    """hub.json байхгүй үед (exe-д багцлагдаагүй бол л): админы компьютерийн нэрийг гараар оруулна."""
+    host = simpledialog.askstring(
+        APP_TITLE, "Админы компьютерийн нэр (жишээ: DESKTOP-ABC123).\n"
+                   "Админ hub.json-г програмд багцалсан бол энэ асуулт гарахгүй.\n"
                    "Хоосон орхивол зөвхөн энэ компьютерт хадгална.", parent=root)
-    if not path or not path.strip():
+    host = (host or "").strip().strip("\\/")
+    if not host:
         return None
-    info = {"share": path.strip().rstrip("\\/")}
-    save_share(info)
+    info = {"host": host, "port": HUB_PORT}
+    save_hub(info)
     return info
 
 
@@ -432,8 +434,9 @@ def run_gui(cfg, updated: bool = False, background: bool = False) -> None:
             return
         cfg["employee_name"] = name
         cfg.save()
-    info = load_share() or (ask_share(root) if first_run else None)
-    api = ShareClient(info, make_uid(), cfg["employee_name"]) if info else None
+    api = make_client(cfg)
+    if api is None and first_run and not admin and ask_hub(root):
+        api = make_client(cfg)
 
     app = App(cfg, api=api, admin=admin)
     app.start()  # main thread дээр (macOS камерын зөвшөөрөл)

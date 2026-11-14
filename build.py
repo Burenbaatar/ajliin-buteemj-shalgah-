@@ -141,26 +141,36 @@ def protect_update_dir(folder: Path) -> None:
         log("update/ хавтас: ажилтнууд зөвхөн уншина")
 
 
-def publish(target: Path) -> None:
-    """Бүтээсэн програмыг админы хавтасны update/ руу байршуулна → ажилтнуудын програм өөрөө шинэчлэгдэнэ."""
-    local = share_local_path()
-    if local is None:
-        sys.exit("АЛДАА: админы хавтас олдсонгүй. Энэ компьютер дээр эхлээд `python main.py --admin-setup` хийнэ.")
-    folder = local / "update"
-    folder.mkdir(exist_ok=True)
-    if IS_WIN:
-        protect_update_dir(folder)
-    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+LEGACY_SHARE = Path(r"C:\AjliinButeemjShare")  # 3.1.x хувилбарууд шинэчлэлээ эндээс (хуваалцсан, зөвхөн унших) авна
+
+
+def _publish_to(folder: Path, target: Path, meta: dict) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
     tmp = folder / (target.name + ".tmp")
     shutil.copy2(target, tmp)
     os.replace(tmp, folder / target.name)
-    meta = {"version": app_version(), "file": target.name, "size": target.stat().st_size, "sha256": digest,
-            "published_at": datetime.now().isoformat(timespec="seconds")}
     # version.json-г хамгийн сүүлд бичнэ — exe бүрэн хуулагдахаас өмнө хэн ч шинэчлэл эхлүүлэхгүй
     (folder / "version.json.tmp").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(folder / "version.json.tmp", folder / "version.json")
-    log(f"Байршууллаа: {folder / target.name} (хувилбар {meta['version']})")
-    print("   Ажилтнуудын програм 30 минутын дотор (эсвэл дараагийн удаа асахад) өөрөө шинэчлэгдэнэ.")
+    log(f"Байршууллаа: {folder / target.name}")
+
+
+def publish(target: Path) -> None:
+    """Бүтээсэн програмыг админы компьютерийн update/ руу байршуулна → ажилтнуудын програм өөрөө шинэчлэгдэнэ
+    (3.2+: серверээр; 3.1.x: хуучин хуваалцсан хавтаснаас)."""
+    local = share_local_path()
+    if local is None:
+        sys.exit("АЛДАА: админы хавтас олдсонгүй. Энэ компьютер дээр эхлээд `python main.py --admin-setup` хийнэ.")
+    meta = {"version": app_version(), "file": target.name, "size": target.stat().st_size,
+            "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+            "published_at": datetime.now().isoformat(timespec="seconds")}
+    _publish_to(local / "update", target, meta)
+    if LEGACY_SHARE.is_dir():
+        _publish_to(LEGACY_SHARE / "update", target, meta)
+        if IS_WIN:
+            protect_update_dir(LEGACY_SHARE / "update")
+    print(f"   Хувилбар {meta['version']} — ажилтнуудын програм 30 минутын дотор (эсвэл дараагийн удаа асахад) "
+          "өөрөө шинэчлэгдэнэ.")
 
 
 def ensure_dist_writable() -> None:
@@ -192,11 +202,14 @@ def main() -> None:
         for d in (ROOT / "build", DIST, VENV):
             shutil.rmtree(d, ignore_errors=True)
 
-    if (ROOT / "share.json").exists():
-        log("share.json (админы хавтас) програмд багцлагдана")
+    if (ROOT / "hub.json").exists():
+        log("hub.json (админы компьютерийн нэр, порт) програмд багцлагдана")
     else:
-        print("АНХААР: share.json алга - эхлээд админы компьютер дээр `python main.py --admin-setup` ажиллуулна "
-              "(эсвэл ажилтан анх нээхэд хавтасны замыг асууна)")
+        print("АНХААР: hub.json алга - эхлээд админы компьютер дээр `python main.py --admin-setup` ажиллуулна "
+              "(эсвэл ажилтан анх нээхэд админы компьютерийн нэрийг асууна)")
+    if (ROOT / "share.json").exists():
+        print("АНХААР: төслийн хавтаст хуучин share.json (нууц үгтэй) байна — хэрэггүй болсон, exe-д багцлагдахгүй. "
+              "`--admin-setup` дахин ажиллуулахад устгагдана.")
 
     ensure_dist_writable()
     py = ensure_venv()

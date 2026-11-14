@@ -396,10 +396,10 @@ class Dashboard(tk.Toplevel):
         tab = tk.Frame(self.nb, bg=BG)
         self.users_tab = tab
         self.nb.add(tab, text="Хэрэглэгчид")
-        cols = ("name", "host", "dept", "active")
+        cols = ("name", "host", "dept", "active", "ver")
         self.users_tv = ttk.Treeview(tab, columns=cols, show="headings", selectmode="browse")
-        for c, title, w in zip(cols, ("Нэр", "Компьютер (хэрэглэгч@компьютер)", "Хэлтэс", "Төлөв"),
-                               (240, 320, 200, 100)):
+        for c, title, w in zip(cols, ("Нэр", "Компьютер (хэрэглэгч@компьютер)", "Хэлтэс", "Төлөв", "Хувилбар"),
+                               (230, 300, 190, 95, 90)):
             self.users_tv.heading(c, text=title)
             self.users_tv.column(c, width=w, anchor="w")
         self.users_tv.tag_configure("new", background=PENDING_BG)
@@ -421,9 +421,12 @@ class Dashboard(tk.Toplevel):
             row=1, column=3, padx=(0, 10))
         button(form, "Хадгалах", self._save_user, primary=True).grid(row=1, column=4, padx=(0, 10))
         button(form, "🗑 Бүрмөсөн устгах", self._remove_user).grid(row=1, column=6, padx=(0, 10))
-        button(form, "Устгасан хүмүүс…", self._show_removed).grid(row=1, column=7)
+        button(form, "Устгасан хүмүүс…", self._show_removed).grid(row=1, column=7, padx=(0, 10))
+        button(form, "Түлхүүр шинэчлэх", self._reset_device).grid(row=1, column=8)
         tk.Label(tab, text="Програм суулгасан хүн энд автоматаар гарна (хэлтэсгүй бол шараар). Хэлтсийг нь оноогоод "
-                           "Хадгалах. Ажлаас гарсан хүнийг \"Бүрмөсөн устгах\" — түүний програм дахин бичихгүй.",
+                           "Хадгалах. Ажлаас гарсан хүнийг \"Бүрмөсөн устгах\" — түүний програм дахин бичихгүй.\n"
+                           "\"Түлхүүр шинэчлэх\" — ажилтан програмаа дахин суулгасан / компьютер сольсон үед "
+                           "(\"түлхүүр таарахгүй\" гэж гарвал).",
                  bg=BG, fg=MUTED, font=(FONT, 10)).pack(anchor="w", padx=6, pady=(0, 6))
 
     def _render_users(self) -> None:
@@ -437,7 +440,7 @@ class Dashboard(tk.Toplevel):
             tags = ("inactive",) if not p["active"] else (("new",) if p["department_id"] is None else ())
             tv.insert("", "end", iid=p["user_id"], tags=tags, values=(
                 p["full_name"] or "—", p["email"], dept.get(p["department_id"], "—"),
-                "Идэвхтэй" if p["active"] else "Хаалттай"))
+                "Идэвхтэй" if p["active"] else "Хаалттай", p.get("version") or "хуучин"))
         self.u_dept_cb.configure(values=["—"] + [d["name"] for d in self.data["departments"]])
         if sel and tv.exists(sel[0]):
             tv.selection_set(sel[0])
@@ -484,6 +487,20 @@ class Dashboard(tk.Toplevel):
         self.bg.run(lambda: self.api.rpc("wt_admin_remove_user", {"p_user": p["user_id"]}),
                     lambda _: (self.info.config(text=f"{name} устгагдлаа", fg=GREEN), self.refresh()),
                     lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
+
+    def _reset_device(self) -> None:
+        p = self._selected_profile()
+        if not p:
+            return messagebox.showinfo(APP_TITLE, "Жагсаалтаас хүн сонгоно уу", parent=self)
+        name = p["full_name"] or p["email"]
+        if not messagebox.askyesno(APP_TITLE, f"{name}-ийн төхөөрөмжийн түлхүүрийг шинэчлэх үү?\n\n"
+                                              "Тэр хүний програм дараагийн холболтоор (1 минутын дотор) шинэ түлхүүр "
+                                              "автоматаар авна. Цагийн түүх хэвээр үлдэнэ.", parent=self):
+            return
+        self.bg.run(lambda: self.api.rpc("wt_admin_reset_device", {"p_user": p["user_id"]}),
+                    lambda _: self.info.config(text=f"{name}: түлхүүр шинэчлэгдлээ", fg=GREEN),
+                    lambda e: messagebox.showerror(APP_TITLE, friendly(e) if "not found" not in str(e) else
+                                                   "Энэ хүн хуучин хувилбартай (түлхүүргүй) байна.", parent=self))
 
     def _show_removed(self) -> None:
         self.bg.run(lambda: self.api.company()["removed"], self._removed_loaded,

@@ -189,7 +189,7 @@ def fetch_raw(api: ShareClient, day: str) -> dict:
     company = api.select("wt_company", "settings", id="eq.1")
     return {
         "day": day,
-        "profiles": api.select("wt_profiles", "user_id,email,full_name,department_id,active,created_at",
+        "profiles": api.select("wt_profiles", "user_id,email,full_name,department_id,active,created_at,version",
                                order="full_name"),
         "departments": api.select("wt_departments", "id,name,telegram_chat_id", order="name"),
         "live": fetch_live(api),

@@ -2,7 +2,7 @@
 
     python main.py                 # цонхтой ажиллуулах
     python main.py --background    # цонхгүй, зөвхөн tray (компьютер асахад автоматаар ингэж эхэлнэ)
-    python main.py --admin-setup   # энэ компьютерийг админых болгох (хуваалцсан хавтас, админ нууц үг)
+    python main.py --admin-setup   # энэ компьютерийг админых болгох (сервер, админ нууц үг)
     python main.py --no-gui        # терминал дээр
     python main.py --camera-test   # камер, царай илрүүлэлтийг шалгах
     python main.py --selftest      # камер нээхгүйгээр бүх модулийг шалгах
@@ -17,16 +17,15 @@ import webbrowser
 from datetime import date
 
 from worktracker import APP_TITLE, __version__
-from worktracker.config import data_dir, load_admin, load_config, load_share
+from worktracker.config import data_dir, load_admin, load_config
 from worktracker.system import (enable_hidpi, ensure_single_instance, set_autostart, setup_logging,
                                 signal_running_instance)
 
 
 def _make_client(cfg):
-    from worktracker.share import ShareClient, make_uid
+    from worktracker.client import make_client
 
-    info = load_share()
-    return ShareClient(info, make_uid(), cfg["employee_name"]) if info else None
+    return make_client(cfg)
 
 
 def selftest(cfg, log_path) -> int:
@@ -55,10 +54,11 @@ def selftest(cfg, log_path) -> int:
     lines.append(f"  Ажилтан         : {cfg['employee_name'] or '(анх нээхэд асууна)'} [{make_uid()}]")
     client = _make_client(cfg)
     if client is None:
-        lines.append("  Админы хавтас   : тохируулаагүй (share.json алга)")
+        lines.append("  Админ руу       : тохируулаагүй (hub.json алга) — зөвхөн энэ компьютерт")
     else:
+        where = getattr(client, "base", None) or f"{client.root} (энэ компьютер — админ)"
         state = "холбогдсон" if client.available() else "олдсонгүй (админы компьютер унтраалттай?)"
-        lines.append(f"  Админы хавтас   : {client.root} — {state}")
+        lines.append(f"  Админ руу       : {where} — {state}")
     lines += [
         f"  Админ компьютер : {'тийм' if load_admin() else 'үгүй'}",
         f"  Тайлан илгээх   : имэйл={cfg['email']['enabled']}, Telegram={cfg['telegram']['enabled']}",
@@ -82,7 +82,7 @@ def run_headless(cfg) -> int:
         cfg.save()
     client = _make_client(cfg)
     if client is None:
-        print("Админы хавтас тохируулаагүй (share.json) — зөвхөн энэ компьютерт хадгална.")
+        print("Админы компьютер тохируулаагүй (hub.json) — зөвхөн энэ компьютерт хадгална.")
     App(cfg, api=client, admin=load_admin() is not None).run_headless()
     return 0
 

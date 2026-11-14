@@ -1,4 +1,4 @@
-"""Ажилтны өгөгдлийг JSON болгоод админы хуваалцсан хавтас руу хуулна (share.py).
+"""Ажилтны өгөгдлийг админы компьютер руу илгээнэ (client.HubClient; админ өөрөө — share.ShareClient).
 
 - Минут тутам, мөн төлөв өөрчлөгдөх бүрт: одоогийн төлөв + өнөөдрийн нийт дүн
 - Апп солигдоход (1 сек тогтвортой болмогц): зөвхөн одоогийн төлөв — самбарт ≤ 5 сек-д харагдана
@@ -17,6 +17,7 @@ import time
 import uuid
 from datetime import date, timedelta
 
+from . import __version__
 from .config import COMPANY_KEYS
 from .report import merge_periods
 from .storage import Storage
@@ -134,7 +135,7 @@ class CloudSync:
 
     def _ok(self) -> None:
         if self.last_error:
-            log.info("Админы хавтастай дахин холбогдлоо")
+            log.info("Админы компьютертэй дахин холбогдлоо")
         self.last_ok = time.monotonic()
         self.last_error = None
 
@@ -142,7 +143,7 @@ class CloudSync:
         msg = exc.friendly if isinstance(exc, (ShareError, NetworkError)) else str(exc)
         self._history_done = False  # хавтас эргэж холбогдоход өмнөх өдрүүдийг ч нөхөж бичнэ
         if msg != self.last_error:  # ижил алдааг дахин дахин логлохгүй
-            log.warning("Админы хавтас руу хуулж чадсангүй: %s (%s)", msg, exc)
+            log.warning("Админ руу илгээж чадсангүй: %s (%s)", msg, exc)
         self.last_error = msg
 
     def pull_settings(self) -> None:
@@ -171,6 +172,7 @@ class CloudSync:
             "p_device_id": self.device_id,
             "p_hostname": self.hostname,
             "p_platform": self.platform,
+            "p_version": __version__,
             "p_day": day,
             "p_work_seconds": int(d["work_seconds"]),
             "p_away_seconds": int(d["away_seconds"]),
@@ -190,6 +192,7 @@ class CloudSync:
         if self.tracker is None:
             return
         params = {"p_device_id": self.device_id, "p_hostname": self.hostname, "p_platform": self.platform,
+                  "p_version": __version__,
                   "p_day": date.today().isoformat(), "p_live": True, "p_live_only": True}
         params.update(self._live_params(self.tracker.snapshot()))
         self.api.rpc("wt_push", params, timeout=10)

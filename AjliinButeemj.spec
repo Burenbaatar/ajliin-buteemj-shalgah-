@@ -7,12 +7,12 @@ import os
 import sys
 
 APP = "AjliinButeemj"
-VERSION = "3.1.1"
+VERSION = "3.2.0"
 
 datas = [("assets/face_detection_yunet_2023mar.onnx", "assets")]
-# share.json (админы хуваалцсан хавтас, --admin-setup үүсгэнэ) байвал програмд багцална → ажилтан юу ч тохируулахгүй
-if os.path.exists("share.json"):
-    datas.append(("share.json", "."))
+# hub.json (админы компьютерийн нэр + порт, нууц зүйлгүй; --admin-setup үүсгэнэ) байвал програмд багцална
+if os.path.exists("hub.json"):
+    datas.append(("hub.json", "."))
 
 a = Analysis(
     ["main.py"],
