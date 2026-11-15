@@ -20,6 +20,8 @@
 Цаг: хариу бүр X-Time (серверийн unix цаг) толгойтой — ажилтны програм цагаа үүнд тааруулна (clock.Clock.sync).
 Сервер ажилтны өдрийн файлд өөрөө srv_first/srv_last (анх/сүүлд холбогдсон цаг) бичиж, өөрийн асаалттай
 байсан үеийг hub_uptime.json-д тэмдэглэнэ — ажилтан эдгээрийг өөрчилж чадахгүй (самбар харьцуулна).
+Админы компьютерийн цаг буруу байж болох тул серверийн цаг = системийн цаг + интернэтийн цагтай харьцуулсан
+засвар (nettime.py, 30 мин тутам). Зөрүүг hub_time.json-д бичнэ — самбар админд анхааруулна.
 """
 from __future__ import annotations
 
@@ -36,9 +38,10 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import APP_NAME
+from . import APP_NAME, nettime
 from .clock import CLOCK
-from .share import DEVICES_FILE, UPTIME_FILE, ShareClient, ShareError, read_json, utcnow_iso, write_json
+from .share import (DEVICES_FILE, TIME_FILE, UPTIME_FILE, ShareClient, ShareError, read_json, utcnow_iso,
+                    write_json)
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +52,8 @@ UPDATE_FILE_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 REGISTER_LIMIT_PER_HOUR = 30
 BEAT_SEC = 60          # серверийн асаалттай байсан үеийг ийм давтамжтай тэмдэглэнэ
 UPTIME_KEEP_DAYS = 40
+TIME_CHECK_SEC = 30 * 60  # интернэтийн цагтай ийм давтамжтай харьцуулна
+TIME_WARN_SEC = 60        # үүнээс их зөрүүтэй бол логт, самбарт анхааруулна
 
 
 def sign(secret: str, ts: str, method: str, path: str, body: bytes) -> str:
@@ -56,9 +61,9 @@ def sign(secret: str, ts: str, method: str, path: str, body: bytes) -> str:
     return hmac.new(bytes.fromhex(secret), msg, hashlib.sha256).hexdigest()
 
 
-def server_now() -> tuple[str, str]:
-    """Серверийн (админы компьютерийн) одоогийн өдөр, цаг компанийн цагийн бүсээр."""
-    t = datetime.fromtimestamp(time.time(), CLOCK.tz)
+def server_now(ts: float | None = None) -> tuple[str, str]:
+    """Серверийн (Hub.now()) өдөр, цаг компанийн цагийн бүсээр."""
+    t = datetime.fromtimestamp(time.time() if ts is None else ts, CLOCK.tz)
     return t.date().isoformat(), t.strftime("%H:%M:%S")
 
 
@@ -79,14 +84,19 @@ class HubError(Exception):
 class Hub:
     """Админы програм (app.py) эхлүүлдэг. root = C:\\AjliinButeemjData (админы локал хавтас)."""
 
-    def __init__(self, root: Path, port: int):
+    def __init__(self, root: Path, port: int, measure=None):
         self.root = Path(root)
         self.port = port
         self._lock = threading.RLock()
         self._clients: dict[str, ShareClient] = {}
         self._registrations: dict[str, list[float]] = {}
         self._httpd: ThreadingHTTPServer | None = None
-        self._beat_stop = threading.Event()
+        self._stop = threading.Event()
+        self._recheck = threading.Event()
+        self._measure = measure or nettime.measure  # тестэд солино
+        self._wall = time.time
+        self._offset: float | None = None  # интернэтийн цаг − системийн цаг (мэдэхгүй бол None)
+        self._offset_mark = 0.0            # хэмжих үеийн (системийн цаг − monotonic): цагийг өөрчилснийг танина
 
     # ------------------------------------------------------------------ асаах / зогсоох
     def start(self) -> bool:
@@ -103,13 +113,15 @@ class Hub:
             return False
         self._httpd.daemon_threads = True
         threading.Thread(target=self._httpd.serve_forever, name="hub", daemon=True).start()
-        self._beat_stop.clear()
+        self._stop.clear()
         threading.Thread(target=self._beat_loop, name="hub-uptime", daemon=True).start()
+        threading.Thread(target=self._time_loop, name="hub-time", daemon=True).start()
         log.info("Сервер ажиллаж байна: TCP %d (ажилтнуудын програм энд өгөгдлөө илгээнэ)", self.port)
         return True
 
     def stop(self) -> None:
-        self._beat_stop.set()
+        self._stop.set()
+        self._recheck.set()
         if self._httpd is not None:
             self._httpd.shutdown()
             self._httpd.server_close()
@@ -122,12 +134,47 @@ class Hub:
                 self.beat()
             except Exception as exc:  # noqa: BLE001
                 log.debug("hub_uptime бичиж чадсангүй: %s", exc)
-            if self._beat_stop.wait(BEAT_SEC):
+            if self._stop.wait(BEAT_SEC):
                 return
+
+    # ------------------------------------------------------------------ серверийн цаг
+    def now(self) -> float:
+        """Серверийн цаг (unix сек): системийн цаг + интернэтийн цагаар засвар. Ажилтнууд үүнд тааруулна."""
+        t = self._wall()
+        off = self._offset
+        if off is not None and abs(t - time.monotonic() - self._offset_mark) > 2.0:
+            # Админ компьютерийнхээ цагийг өөрчилсөн (жишээ нь "Sync now") → засвар хүчингүй, дахин хэмжинэ
+            self._offset = off = None
+            self._recheck.set()
+        return t + (off or 0.0)
+
+    def _time_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.check_time()
+            except Exception as exc:  # noqa: BLE001
+                log.debug("Интернэтийн цагтай харьцуулж чадсангүй: %s", exc)
+            self._recheck.wait(TIME_CHECK_SEC)
+            self._recheck.clear()
+
+    def check_time(self) -> None:
+        """Энэ компьютерийн цагийг интернэтийн цагтай харьцуулж, засварыг санана (hub_time.json → самбар)."""
+        off = self._measure()
+        if off is None:
+            log.info("Интернэтийн цагтай харьцуулж чадсангүй — компьютерийн цагаар ажиллана")
+        else:
+            self._offset_mark = self._wall() - time.monotonic()
+            self._offset = off
+            if abs(off) >= TIME_WARN_SEC:
+                log.warning("Энэ компьютерийн цаг интернэтийнхээс %+.0f сек зөрүүтэй — ажилтнуудад зөв цагийг "
+                            "өгнө. Windows-ийн цагаа тохируулна уу (Date & time → Sync now)", -off)
+        cur = self._offset  # интернэтгүй үед сүүлд мэдсэн засвараар үргэлжилнэ
+        write_json(self.root / TIME_FILE, {"offset": None if cur is None else round(cur, 1),
+                                           "checked_at": utcnow_iso()})
 
     def beat(self) -> None:
         """hub_uptime.json: {"2026-11-15": [["08:01:10", "12:30:05"], ...]} — сервер асаалттай байсан үеүд."""
-        day, hms = server_now()
+        day, hms = server_now(self.now())
         path = self.root / UPTIME_FILE
         with self._lock:
             data = read_json(path, {})
@@ -173,7 +220,7 @@ class Hub:
         uid, ts, sig = headers.get("X-Uid", ""), headers.get("X-Ts", ""), headers.get("X-Sig", "")
         if not UID_RE.match(uid) or not ts.isdigit() or not sig:
             raise HubError(401, "unsigned request")
-        if abs(time.time() - int(ts)) > MAX_SKEW_SEC:
+        if abs(self.now() - int(ts)) > MAX_SKEW_SEC:
             raise HubError(401, "clock skew")
         dev = self._devices().get(uid)
         if not dev:
@@ -195,7 +242,7 @@ class Hub:
     def push(self, uid: str, params: dict) -> dict:
         c = self._client(uid, str(params.get("p_name") or "")[:100])
         params = dict(params)
-        params["p_srv_now"] = list(server_now())  # ажилтны илгээснийг дарж, серверийн цагаар (share._wt_push)
+        params["p_srv_now"] = list(server_now(self.now()))  # ажилтны илгээснийг дарж (share._wt_push)
         try:
             return {"result": c.rpc("wt_push", params)}
         except ShareError as exc:
@@ -226,7 +273,7 @@ class _Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("X-Time", f"{time.time():.3f}")  # ажилтны програм цагаа тааруулна
+        self.send_header("X-Time", f"{self.hub.now():.3f}")  # ажилтны програм цагаа тааруулна
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

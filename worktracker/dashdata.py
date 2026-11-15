@@ -179,6 +179,22 @@ def clock_jump_text(delta_sec: int, kind: str | None = None) -> str:
     return f"{amount} {'ухраасан' if delta_sec < 0 else 'урагшлуулсан'}"
 
 
+def clock_warning(hub_time: dict | None, now: datetime | None = None) -> str | None:
+    """Админы компьютерийн цаг интернэтийнхээс 1+ мин зөрүүтэй бол самбарын дээд талд харуулах текст."""
+    try:
+        off = float((hub_time or {})["offset"])
+        checked = parse_ts(hub_time.get("checked_at"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if abs(off) < 60 or checked is None or (now or datetime.now(timezone.utc)) - checked > timedelta(hours=3):
+        return None
+    m = round(abs(off) / 60)
+    amount = f"{m // 60} ц {m % 60} мин" if m >= 60 else f"{m} мин"
+    return (f"⚠ Энэ компьютерийн цаг {amount} {'хоцорч' if off > 0 else 'түрүүлж'} байна (интернэтийн цагаас). "
+            "Ажилтнуудын цагийг зөв цагаар бүртгэж байгаа ч Windows-ийн цагаа тохируулна уу: "
+            "Settings → Time & language → Date & time → Sync now")
+
+
 def server_gaps(rows, spans) -> list[dict]:
     """Програм "08:50-д ирсэн" гэж бүртгэсэн ч админы компьютерт 09:41-д анх холбогдсон, тэр хооронд админы
     сервер тасралтгүй асаалттай байсан (hub_uptime) компьютерууд. srv_* -г зөвхөн сервер бичдэг."""
@@ -225,6 +241,7 @@ def fetch_raw(api: ShareClient, day: str) -> dict:
         "daily": api.select("wt_daily", "user_id,hostname,work_seconds,away_seconds,first_seen,last_seen,apps,"
                                         "periods,flags,clock_jumps,srv_first,srv_last", day=f"eq.{day}"),
         "uptime": next((r["spans"] for r in api.select("wt_hub_uptime", day=f"eq.{day}")), []),
+        "hub_time": next(iter(api.select("wt_hub_time")), None),
         "week": api.select("wt_daily", "user_id,day,work_seconds", day=[f"gte.{d0}", f"lte.{day}"]),
         "settings": (company[0].get("settings") if company else None) or {},
     }

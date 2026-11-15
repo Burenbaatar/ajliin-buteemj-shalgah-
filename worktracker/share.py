@@ -6,6 +6,7 @@
     people/<uid>/live.json            одоогийн төлөв (минут тутам)
     people/<uid>/days/<өдөр>.json     өдрийн дүн (+ srv_first/srv_last — зөвхөн сервер бичнэ)
     hub_uptime.json                   админы сервер асаалттай байсан үеүд (hub.py)
+    hub_time.json                     админы компьютерийн цаг интернэтийнхээс хэр зөрүүтэй (hub.py)
 
 Компьютер бүр зөвхөн өөрийн people/<uid>/ хавтсанд бичдэг тул хоёр компьютер нэг файлыг зэрэг засахгүй.
 ShareClient нь самбар (dashdata) болон CloudSync-ийн хэрэглэдэг select()/rpc() интерфэйстэй.
@@ -32,6 +33,7 @@ log = logging.getLogger(__name__)
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DEVICES_FILE = "devices.json"  # ажилтан бүрийн хувийн түлхүүр (hub.py) — зөвхөн админы компьютерт
 UPTIME_FILE = "hub_uptime.json"  # сервер асаалттай байсан үеүд (hub.py)
+TIME_FILE = "hub_time.json"  # админы компьютерийн цагийн зөрүү интернэтийнхээс (hub.py)
 HMS_RE = re.compile(r"^\d{2}:\d{2}:\d{2}$")
 STATUSES = ("working", "away", "offline")
 CAMERA_STATES = ("ok", "blocked", "static", "none")
@@ -354,6 +356,9 @@ class ShareClient:
                 if lv:
                     out.append(dict(lv, user_id=d.name))
             return out
+        if table == "wt_hub_time":
+            t = read_json(self.root / TIME_FILE, {})
+            return [t] if isinstance(t, dict) and t else []
         if table == "wt_hub_uptime":
             data = read_json(self.root / UPTIME_FILE, {}) or {}
             return [{"day": k, "spans": v} for k, v in data.items() if isinstance(v, list)]                 if isinstance(data, dict) else []

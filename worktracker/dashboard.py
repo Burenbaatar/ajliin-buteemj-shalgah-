@@ -98,6 +98,9 @@ class Dashboard(tk.Toplevel):
         button(head, "CSV хадгалах", self.export_csv).pack(side="left", padx=(8, 0))
         self.info = tk.Label(head, text="", font=(FONT, 11), fg=MUTED, bg=BG)
         self.info.pack(side="right")
+        # Админы компьютерийн цаг буруу бол (hub_time.json) — нуугдмал, хэрэгтэй үед л харагдана
+        self.clock_warn = tk.Label(self, text="", font=(FONT, 11, "bold"), fg=ORANGE, bg=BG, anchor="w",
+                                   justify="left", wraplength=1080, padx=14)
 
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -141,6 +144,12 @@ class Dashboard(tk.Toplevel):
         self._live_sig = json.dumps(raw["live"], sort_keys=True, default=str)
         self.data = dd.build_raw(raw)
         self.info.config(text="Шинэчилсэн " + datetime.now().strftime("%H:%M:%S"), fg=MUTED)
+        warn = dd.clock_warning(raw.get("hub_time"))
+        if warn:
+            self.clock_warn.config(text=warn)
+            self.clock_warn.pack(fill="x", before=self.nb, pady=(0, 6))
+        else:
+            self.clock_warn.pack_forget()
         self._render_day()
         self._render_week()
         if self.is_admin:
