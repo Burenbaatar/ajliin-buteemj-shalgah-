@@ -210,7 +210,11 @@ class Tracker:
             if locked or self.paused:
                 evidence = False
             elif cam_ok:
-                evidence = face or (bool(cfg["input_counts_as_presence"]) and input_recent)
+                # A static face may be a photo. Do not let recent keyboard or
+                # mouse activity override the liveness warning.
+                evidence = self.camera_state != "static" and (
+                    face or (bool(cfg["input_counts_as_presence"]) and input_recent)
+                )
             elif idle is not None:
                 evidence = idle <= float(cfg["no_camera_idle_timeout_sec"])
             else:
