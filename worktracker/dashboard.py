@@ -676,7 +676,7 @@ class Dashboard(tk.Toplevel):
         field(f, 0, "Царай харагдахгүй болоод \"Гарсан\" гэх (сек)", "away_grace_sec", "spin", from_=5, to=900,
               increment=5)
         field(f, 1, "Гар/хулгана хөдөлж байвал ажиллаж байна гэж үзэх", "input_counts_as_presence", "check")
-        field(f, 2, "Зураг (хөдөлгөөнгүй царай) илрүүлэх", "liveness_enabled", "check")
+        field(f, 2, "Зураг/видео хуурмаг илрүүлэх", "liveness_enabled", "check")
         field(f, 3, "  … хэдэн секунд огт хөдлөхгүй бол сэжигтэй", "liveness_static_sec", "spin", from_=30,
               to=900, increment=10)
         field(f, 4, "Тайланд жагсаах богино гарсан хугацаа (мин)", "min_away_period_min", "spin", from_=1, to=60)

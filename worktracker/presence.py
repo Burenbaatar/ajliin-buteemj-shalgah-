@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
+import random
 import sys
 import threading
 import time
@@ -18,6 +20,7 @@ from .config import resource_path  # noqa: E402
 log = logging.getLogger(__name__)
 
 YUNET_MODEL = "face_detection_yunet_2023mar.onnx"
+SPOOF_MODEL = "face_antispoof_minifasnetv2.onnx"
 DETECT_WIDTH = 320  # хурдан ажиллуулахын тулд кадрыг жижигрүүлнэ
 
 
@@ -40,21 +43,84 @@ class FaceDetector:
         else:
             raise RuntimeError(f"Царай илрүүлэх загвар олдсонгүй: {model}")
 
-    def detect(self, frame) -> list[tuple[int, int, int, int]]:
-        """Кадр дээрх царайнуудын (x, y, w, h) жагсаалт (эх кадрын хэмжээгээр)."""
+    def detect_faces(self, frame) -> list[tuple[tuple[int, int, int, int], tuple | None]]:
+        """Return face boxes and YuNet landmarks in original frame coordinates."""
         h, w = frame.shape[:2]
         scale = DETECT_WIDTH / float(w)
         small = cv2.resize(frame, (DETECT_WIDTH, int(h * scale)))
-        boxes: list = []
+        found: list = []
         if self._yunet is not None:
             self._yunet.setInputSize((small.shape[1], small.shape[0]))
             _, faces = self._yunet.detect(small)
             if faces is not None:
-                boxes = [tuple(f[:4]) for f in faces]
+                for f in faces:
+                    box = tuple(int(v / scale) for v in f[:4])
+                    points = tuple((float(f[i] / scale), float(f[i + 1] / scale))
+                                   for i in range(4, 14, 2))
+                    found.append((box, points))
         else:
             gray = cv2.equalizeHist(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY))
-            boxes = list(self._haar.detectMultiScale(gray, 1.1, 5, minSize=(30, 30)))
-        return [tuple(int(v / scale) for v in b) for b in boxes]
+            boxes = self._haar.detectMultiScale(gray, 1.1, 5, minSize=(30, 30))
+            found = [(tuple(int(v / scale) for v in b), None) for b in boxes]
+        return found
+
+    def detect(self, frame) -> list[tuple[int, int, int, int]]:
+        """Return face boxes in original frame coordinates."""
+        return [box for box, _ in self.detect_faces(frame)]
+
+
+class FaceSpoofDetector:
+    """MiniFASNet classifier for real faces versus photo/screen presentation attacks."""
+
+    def __init__(self):
+        model = resource_path("assets", SPOOF_MODEL)
+        self.net = None
+        self.unavailable = False
+        self.spoof_streak = 0
+        try:
+            self.net = cv2.dnn.readNetFromONNX(str(model))
+        except Exception:  # noqa: BLE001
+            self.unavailable = True
+            log.exception("Зураг/видео хуурмаг илрүүлэх загвар ачаалж чадсангүй")
+
+    def reset(self) -> None:
+        self.spoof_streak = 0
+
+    def is_spoof(self, frame, box) -> bool:
+        if self.unavailable:
+            return True
+        image_h, image_w = frame.shape[:2]
+        x, y, box_w, box_h = box
+        if box_w <= 0 or box_h <= 0:
+            return False
+        scale = min((image_h - 1) / box_h, (image_w - 1) / box_w, 2.7)
+        crop_w, crop_h = box_w * scale, box_h * scale
+        center_x, center_y = x + box_w / 2, y + box_h / 2
+        x1 = max(0, int(center_x - crop_w / 2))
+        y1 = max(0, int(center_y - crop_h / 2))
+        x2 = min(image_w - 1, int(center_x + crop_w / 2))
+        y2 = min(image_h - 1, int(center_y + crop_h / 2))
+        crop = frame[y1:y2 + 1, x1:x2 + 1]
+        if crop.size == 0:
+            return False
+
+        crop = cv2.resize(crop, (80, 80))
+        blob = cv2.dnn.blobFromImage(crop, scalefactor=1.0, size=(80, 80), swapRB=False)
+        try:
+            self.net.setInput(blob)
+            logits = self.net.forward().reshape(-1)
+            if len(logits) < 2:
+                self.unavailable = True
+                return True
+            maximum = float(max(logits))
+            exp_scores = [math.exp(float(score) - maximum) for score in logits]
+            real_probability = exp_scores[1] / sum(exp_scores)
+            self.spoof_streak = self.spoof_streak + 1 if real_probability < 0.5 else 0
+            return self.spoof_streak >= 3
+        except Exception:  # noqa: BLE001
+            self.unavailable = True
+            log.exception("Зураг/видео хуурмаг илрүүлэхэд алдаа гарлаа")
+            return True
 
 
 # Хөдөлгөөнгүй зургийг амьд хүнээс ялгах босго (normalized 32×32 нүүрний ялгаа).
@@ -72,12 +138,78 @@ class Liveness:
     """
 
     def __init__(self):
+        self._challenge_active = False
+        self._challenge_failed = False
+        self._challenge_started = 0.0
+        self._challenge_baseline = 0.0
+        self._challenge_step = 0
+        self._challenge_first_direction = 1
+        self._next_challenge_at = time.monotonic() + random.uniform(30, 60)
         self.reset()
 
     def reset(self) -> None:
         self.ref_box = None
         self.prev = None
         self.last_motion = time.monotonic()
+
+    def defer_challenge(self) -> None:
+        self._challenge_active = False
+        self._next_challenge_at = time.monotonic() + random.uniform(30, 60)
+
+    @property
+    def challenge_failed(self) -> bool:
+        return self._challenge_failed
+
+    @property
+    def challenge_prompt(self) -> str:
+        if self._challenge_failed and not self._challenge_active:
+            return "Амьд эсэх шалгалт амжилтгүй — камер руу харж дахин оролдоно уу"
+        if not self._challenge_active:
+            return ""
+        direction = self._challenge_first_direction * (1 if self._challenge_step == 0 else -1)
+        arrow = "→" if direction > 0 else "←"
+        return f"Нүүрээ камерын кадрын {arrow} чигт эргүүл ({self._challenge_step + 1}/2)"
+
+    @staticmethod
+    def _yaw(points) -> float | None:
+        if not points or len(points) < 3:
+            return None
+        eye_a, eye_b, nose = points[:3]
+        axis_x, axis_y = eye_b[0] - eye_a[0], eye_b[1] - eye_a[1]
+        eye_distance = math.hypot(axis_x, axis_y)
+        if eye_distance < 1:
+            return None
+        midpoint_x = (eye_a[0] + eye_b[0]) / 2
+        midpoint_y = (eye_a[1] + eye_b[1]) / 2
+        return ((nose[0] - midpoint_x) * axis_x + (nose[1] - midpoint_y) * axis_y) / eye_distance**2
+
+    def update_challenge(self, points, now: float) -> None:
+        """Ask for two unpredictable head turns and verify YuNet face geometry."""
+        yaw = self._yaw(points)
+        if self._challenge_active:
+            if now - self._challenge_started > 25:
+                self._challenge_active = False
+                self._challenge_failed = True
+                self._next_challenge_at = now + 30
+                return
+            if yaw is None:
+                return
+            delta = yaw - self._challenge_baseline
+            direction = self._challenge_first_direction * (1 if self._challenge_step == 0 else -1)
+            if direction * delta >= 0.16:
+                self._challenge_step += 1
+                if self._challenge_step >= 2:
+                    self._challenge_active = False
+                    self._challenge_failed = False
+                    self._next_challenge_at = now + random.uniform(20 * 60, 40 * 60)
+            return
+
+        if now >= self._next_challenge_at and yaw is not None:
+            self._challenge_active = True
+            self._challenge_started = now
+            self._challenge_baseline = yaw
+            self._challenge_step = 0
+            self._challenge_first_direction = random.choice((-1, 1))
 
     @staticmethod
     def _crop(gray, box):
@@ -142,6 +274,7 @@ class PresenceMonitor:
         self.interval = max(0.2, float(interval))
         self.cfg = cfg if cfg is not None else {}
         self.detector = FaceDetector()
+        self.spoof_detector = FaceSpoofDetector()
         self.liveness = Liveness()
         self.camera_ok = False
         self.last_face_time = 0.0  # амьд царай харагдсан сүүлийн цаг (time.monotonic())
@@ -159,6 +292,7 @@ class PresenceMonitor:
         if paused:
             self._paused.set()
         else:
+            self.liveness.defer_challenge()
             self._reopen_now = True
             self._paused.clear()
 
@@ -171,6 +305,10 @@ class PresenceMonitor:
         if self.face_static:
             return "static"
         return "ok"
+
+    @property
+    def challenge_prompt(self) -> str:
+        return self.liveness.challenge_prompt if self.cfg.get("liveness_enabled", True) else ""
 
     def _check_blocked(self, gray, now: float) -> None:
         """Кадр бараг хар эсвэл нэг өнгөтэй (наалт, хуруу) удаан үргэлжилбэл → таглагдсан."""
@@ -191,19 +329,25 @@ class PresenceMonitor:
         now = time.monotonic()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         self._check_blocked(gray, now)
-        faces = [] if self.blocked else self.detector.detect(frame)
+        faces = [] if self.blocked else self.detector.detect_faces(frame)
         if not faces:
+            self.liveness.update_challenge(None, now)
             self.liveness.reset()
-            self.face_static = False
+            self.spoof_detector.reset()
+            self.face_static = self.liveness.challenge_failed
             return
         if self.cfg.get("liveness_enabled", True):
-            box = max(faces, key=lambda b: b[2] * b[3])
+            box, points = max(faces, key=lambda item: item[0][2] * item[0][3])
+            self.liveness.update_challenge(points, now)
             self.liveness.update(gray, box, now, float(self.cfg.get("liveness_threshold", MOTION_THRESHOLD)))
-            static = self.liveness.is_static(now, float(self.cfg.get("liveness_static_sec", 120)))
+            spoofed = self.spoof_detector.is_spoof(frame, box)
+            static = spoofed or self.liveness.challenge_failed or self.liveness.is_static(
+                now, float(self.cfg.get("liveness_static_sec", 120)))
             if static and not self.face_static:
-                log.info("Хөдөлгөөнгүй царай илэрлээ (зураг байж магадгүй)")
+                log.info("Амьд царай баталгаажаагүй (зураг/бичлэг байж магадгүй)")
             self.face_static = static
         else:
+            self.liveness.defer_challenge()
             self.face_static = False
         if not self.face_static:
             self.last_face_time = now

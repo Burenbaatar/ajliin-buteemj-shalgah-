@@ -114,6 +114,7 @@ class Tracker:
                 "camera_ok": self.camera_ok,
                 "face_visible": self.face_visible,
                 "camera_state": self.camera_state,
+                "challenge_prompt": self.presence.challenge_prompt if self.presence else "",
                 "top_apps": top,
             }
 
@@ -211,8 +212,9 @@ class Tracker:
                 evidence = False
             elif cam_ok:
                 # A static face may be a photo. Do not let recent keyboard or
-                # mouse activity override the liveness warning.
-                evidence = self.camera_state != "static" and (
+                # mouse activity override a liveness challenge or warning.
+                challenge_pending = bool(self.presence and self.presence.challenge_prompt)
+                evidence = self.camera_state != "static" and not challenge_pending and (
                     face or (bool(cfg["input_counts_as_presence"]) and input_recent)
                 )
             elif idle is not None:

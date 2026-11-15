@@ -123,7 +123,7 @@ def collect(profiles, departments, live, today_rows, settings: dict, sent: dict,
         if fresh and cam in ("blocked", "static"):
             when = local_hm(lv.get("camera_state_since"))
             text = (f"📷 {name(uid)}-ийн камер таглагдсан байна ({when}-с)" if cam == "blocked"
-                    else f"🖼 {name(uid)}: камерт хөдөлгөөнгүй царай (зураг байж магадгүй) {when}-с")
+                    else f"🖼 {name(uid)}: камерт сэжигтэй дүрс (зураг/видео?) {when}-с")
             alert(uid, f"camera_{cam}", lv.get("camera_state_since") or today.isoformat(), text)
 
     # 5) Компьютерийн цагийг гараар өөрчилсөн (цаг тоолоход нөлөөлөөгүй ч санаатай үйлдэл)

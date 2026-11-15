@@ -25,7 +25,7 @@ from .uiutil import BG, FG, FONT, GREEN, MUTED, RED, Bg, button, clear, fmt_dur,
 
 log = logging.getLogger(__name__)
 TOP_N = 6
-CAMERA_WARN = {"blocked": "⚠ Камер таглагдсан байна", "static": "⚠ Хөдөлгөөнгүй царай (зураг?)"}
+CAMERA_WARN = {"blocked": "⚠ Камер таглагдсан байна", "static": "⚠ Сэжигтэй дүрс (зураг/видео?)"}
 PAUSED_COLOR = "#9a6700"
 
 
@@ -117,6 +117,7 @@ class MainWindow:
         self._hidden_once = False
         self._update_info = None
         self._installing = False
+        self._last_challenge_prompt = ""
         self._last_update_check = time.monotonic()  # эхлэхэд run_gui шалгасан
         clear(root)
         root.title(APP_TITLE)
@@ -200,6 +201,15 @@ class MainWindow:
             cam = "Холбогдсон · " + ("царай харагдаж байна" if s["face_visible"] else "царай харагдахгүй")
         if s.get("camera_state") in CAMERA_WARN:
             cam = CAMERA_WARN[s["camera_state"]]
+        challenge_prompt = s.get("challenge_prompt", "")
+        if challenge_prompt:
+            cam = challenge_prompt
+            if self.root.state() == "withdrawn":
+                self.root.deiconify()
+                self.root.lift()
+            if challenge_prompt != self._last_challenge_prompt and self.tray:
+                self.tray.notify(challenge_prompt)
+        self._last_challenge_prompt = challenge_prompt
         self.rows["cam"].config(text=cam, fg="#bc4c00" if s.get("camera_state") in CAMERA_WARN else FG)
         if self.tray:
             self.tray.set_status("paused" if s["paused"] else s["status"], s["status_text"])
