@@ -11,7 +11,6 @@ import threading
 import time
 import tkinter as tk
 import webbrowser
-from datetime import date
 from tkinter import messagebox, simpledialog
 
 from . import APP_TITLE, updater
@@ -314,7 +313,7 @@ class MainWindow:
     def open_report(self) -> None:
         self.app.tracker.flush_now()
         cfg = self.app.cfg
-        r = build_report(self.app.storage, date.today().isoformat(), cfg["employee_name"], cfg["min_away_period_min"])
+        r = build_report(self.app.storage, self.app.tracker.clock.today().isoformat(), cfg["employee_name"], cfg["min_away_period_min"])
         html_path, _ = save_report(r)
         webbrowser.open(html_path.as_uri())
 

@@ -6,8 +6,11 @@ from datetime import date, datetime, timedelta, timezone
 from .share import ShareClient
 
 OFFLINE_AFTER_SEC = 180  # сүүлийн мэдээллээс хойш ийм удаан бол "Офлайн"
+# Програмын бүртгэлээр ирсэн цагаас хойш ийм удаан админы компьютерт холбогдоогүй бол (сервер асаалттай байхад) ⚠
+SERVER_GAP_SEC = 15 * 60
 STATUS_TEXT = {"working": "Ажиллаж байна", "away": "Гарсан", "offline": "Офлайн"}
-FLAG_TEXT = {"static": "Хөдөлгөөнгүй царай (зураг?)", "blocked": "Камер таглагдсан"}
+FLAG_TEXT = {"static": "Хөдөлгөөнгүй царай (зураг?)", "blocked": "Камер таглагдсан",
+             "clock": "Компьютерийн цагийг өөрчилсөн"}
 CAMERA_TEXT = {"ok": "OK", "none": "олдсонгүй", "blocked": "таглагдсан", "static": "хөдөлгөөнгүй царай"}
 
 DEFAULT_SETTINGS = {
@@ -79,7 +82,7 @@ def settings_with_defaults(s: dict | None) -> dict:
 def merge_daily(rows: list[dict]) -> dict:
     """Нэг хүний нэг өдрийн хэд хэдэн компьютерийн мөрийг нэгтгэнэ."""
     out = {"work_seconds": 0, "away_seconds": 0, "first_seen": None, "last_seen": None,
-           "apps": [], "periods": [], "flags": [], "hostnames": []}
+           "apps": [], "periods": [], "flags": [], "clock_jumps": [], "hostnames": []}
     apps: dict[str, int] = {}
     for r in rows:
         out["work_seconds"] += r.get("work_seconds") or 0
@@ -92,11 +95,13 @@ def merge_daily(rows: list[dict]) -> dict:
             apps[a] = apps.get(a, 0) + int(s)
         out["periods"].extend(r.get("periods") or [])
         out["flags"].extend(r.get("flags") or [])
+        out["clock_jumps"].extend(r.get("clock_jumps") or [])
         if r.get("hostname"):
             out["hostnames"].append(r["hostname"])
     out["apps"] = sorted(apps.items(), key=lambda kv: kv[1], reverse=True)
     out["periods"].sort(key=lambda p: p[1])
     out["flags"].sort(key=lambda p: p[1])
+    out["clock_jumps"].sort(key=lambda j: j[0])
     return out
 
 
@@ -165,8 +170,32 @@ def schedule_metrics(d: dict, has_day: bool, s: dict, day_iso: str, now: datetim
             "lunch_away": lunch_away, "away_net": max(0, d["away_seconds"] - lunch_away), "absent": absent}
 
 
+def clock_jump_text(delta_sec: int, kind: str | None = None) -> str:
+    """-3060 → "51 мин ухраасан"; kind="server" → "админы компьютерээс 51 мин хоцорч байсан"."""
+    m = max(1, round(abs(int(delta_sec)) / 60))
+    amount = f"{m // 60} ц {m % 60} мин" if m >= 60 else f"{m} мин"
+    if kind == "server":
+        return f"админы компьютерээс {amount} {'хоцорч' if delta_sec < 0 else 'түрүүлж'} байсан"
+    return f"{amount} {'ухраасан' if delta_sec < 0 else 'урагшлуулсан'}"
+
+
+def server_gaps(rows, spans) -> list[dict]:
+    """Програм "08:50-д ирсэн" гэж бүртгэсэн ч админы компьютерт 09:41-д анх холбогдсон, тэр хооронд админы
+    сервер тасралтгүй асаалттай байсан (hub_uptime) компьютерууд. srv_* -г зөвхөн сервер бичдэг."""
+    up = [(hm_sec(a), hm_sec(b)) for a, b in (s for s in spans or [] if isinstance(s, list) and len(s) == 2)]
+    out = []
+    for r in rows or []:
+        first, srv = hm_sec(r.get("first_seen")), hm_sec(r.get("srv_first"))
+        if first is None or srv is None or srv - first < SERVER_GAP_SEC:
+            continue
+        if any(a is not None and b is not None and a <= first and srv <= b + 180 for a, b in up):
+            out.append({"hostname": r.get("hostname") or "", "first": r["first_seen"], "server": r["srv_first"],
+                        "gap": srv - first})
+    return out
+
+
 def flag_totals(flags) -> dict:
-    out = {"static": 0, "blocked": 0}
+    out = {"static": 0, "blocked": 0, "clock": 0}
     for kind, a, b in flags or []:
         if kind in out:
             out[kind] += max(0, to_sec(b) - to_sec(a))
@@ -194,7 +223,8 @@ def fetch_raw(api: ShareClient, day: str) -> dict:
         "departments": api.select("wt_departments", "id,name,telegram_chat_id", order="name"),
         "live": fetch_live(api),
         "daily": api.select("wt_daily", "user_id,hostname,work_seconds,away_seconds,first_seen,last_seen,apps,"
-                                        "periods,flags", day=f"eq.{day}"),
+                                        "periods,flags,clock_jumps,srv_first,srv_last", day=f"eq.{day}"),
+        "uptime": next((r["spans"] for r in api.select("wt_hub_uptime", day=f"eq.{day}")), []),
         "week": api.select("wt_daily", "user_id,day,work_seconds", day=[f"gte.{d0}", f"lte.{day}"]),
         "settings": (company[0].get("settings") if company else None) or {},
     }
@@ -203,11 +233,11 @@ def fetch_raw(api: ShareClient, day: str) -> dict:
 def build_raw(raw: dict, live: list[dict] | None = None) -> dict:
     """fetch_raw-ийн үр дүнг нэгтгэнэ. live өгвөл шинэ одоогийн төлөвөөр солино."""
     return build(raw["profiles"], raw["departments"], raw["live"] if live is None else live, raw["daily"],
-                 raw["week"], raw["day"], settings=raw["settings"])
+                 raw["week"], raw["day"], settings=raw["settings"], uptime=raw.get("uptime"))
 
 
 def build(profiles, departments, live, daily, week, day: str, now: datetime | None = None,
-          settings: dict | None = None) -> dict:
+          settings: dict | None = None, uptime=None) -> dict:
     s = settings_with_defaults(settings)
     now_local = now.astimezone().replace(tzinfo=None) if now and now.tzinfo else (now or datetime.now())
     dept_name = {d["id"]: d["name"] for d in departments}
@@ -232,6 +262,7 @@ def build(profiles, departments, live, daily, week, day: str, now: datetime | No
             continue  # тухайн өдөр бүртгүүлээгүй байсан
         lv = live_by.get(p["user_id"])
         d = merge_daily(daily_by.get(p["user_id"], []))
+        gaps = server_gaps(daily_by.get(p["user_id"], []), uptime)
         wk = week_by.get(p["user_id"], {})
         absent_days = [dd for dd in days if dd not in wk and (not created or dd >= created)
                        and schedule_metrics(merge_daily([]), False, s, dd, now_local)["absent"]]
@@ -251,6 +282,8 @@ def build(profiles, departments, live, daily, week, day: str, now: datetime | No
             "metrics": schedule_metrics(d, has_day, s, day, now_local),
             "prod": productivity(d["apps"], s),
             "flag_sec": flag_totals(d["flags"]),
+            "server_gaps": gaps,
+            "suspicious": bool(d["clock_jumps"] or gaps) or any(v for v in flag_totals(d["flags"]).values()),
         })
     order = {"working": 0, "away": 1, "offline": 2}
     people.sort(key=lambda x: (order[x["status"]], -x["day"]["work_seconds"], x["name"]))

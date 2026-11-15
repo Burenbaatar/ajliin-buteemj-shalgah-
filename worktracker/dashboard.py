@@ -259,7 +259,7 @@ class Dashboard(tk.Toplevel):
             self._kpi("Хоцорсон", str(late), ORANGE)
         if absent:
             self._kpi("Ирээгүй", str(absent), RED)
-        sus = sum(1 for p in people if p["flag_sec"]["static"] or p["flag_sec"]["blocked"])
+        sus = sum(1 for p in people if p["suspicious"])
         if sus:
             self._kpi("Сэжигтэй", str(sus), ORANGE)
 
@@ -280,7 +280,7 @@ class Dashboard(tk.Toplevel):
             cv.create_rectangle(0, y, total_w, y + ROW_H, fill=BG, outline="", tags=(tag, "bgrow"))
             cv.create_line(0, y + ROW_H - 1, total_w, y + ROW_H - 1, fill=GAP)
             x = 12
-            warn = p["camera_state"] in ("static", "blocked") or p["flag_sec"]["static"] or p["flag_sec"]["blocked"]
+            warn = p["camera_state"] in ("static", "blocked") or p["suspicious"]
             cv.create_text(x, y + 15, anchor="w", text=("⚠ " if warn else "") + p["name"][:24],
                            font=(FONT, 12, "bold"), fill=ORANGE if warn else FG, tags=tag)
             sub = " · ".join(t for t in (p["department"], (p["live"] or {}).get("hostname", "")) if t)
@@ -895,6 +895,27 @@ class DetailWindow(tk.Toplevel):
             txt = "\n".join(f"{a[:5]} – {b[:5]}   {dd.FLAG_TEXT.get(k, k)}  ({fmt_dur(dd.to_sec(b) - dd.to_sec(a))})"
                             for k, a, b in flags[:8])
             tk.Label(self, text=txt, font=(FONT, 11), fg=FG, bg=BG, justify="left").pack(anchor="w")
+
+        jumps = d.get("clock_jumps") or []
+        if jumps:
+            tk.Label(self, text=f"🕐 Компьютерийн цаг өөрчлөгдсөн ({len(jumps)})", font=(FONT, 12, "bold"),
+                     fg=ORANGE, bg=BG).pack(anchor="w", pady=(8, 2))
+            txt = "\n".join(f"{j[0][:5]}   {dd.clock_jump_text(j[1], j[2] if len(j) > 2 else None)}"
+                            for j in jumps[:8])
+            if len(jumps) > 8:
+                txt += f"\n… бас {len(jumps) - 8}"
+            tk.Label(self, text=txt, font=(FONT, 11), fg=FG, bg=BG, justify="left").pack(anchor="w")
+            tk.Label(self, text="Ирсэн/явсан цаг, ажилласан хугацаа зөв — програм өөрийн цагаар (админы компьютерийн "
+                                "цагтай тулгаж) бүртгэсэн.", font=(FONT, 10), fg=MUTED, bg=BG).pack(anchor="w")
+
+        for g in p.get("server_gaps") or []:
+            host = f"  ({g['hostname']})" if g["hostname"] else ""
+            tk.Label(self, text=f"⚠ Цаг зөрүүтэй: компьютер {g['first'][:5]}, сервер {g['server'][:5]}{host}",
+                     font=(FONT, 12, "bold"), fg=ORANGE, bg=BG).pack(anchor="w", pady=(8, 2))
+            tk.Label(self, text=f"Програм {g['first'][:5]}-аас ажилласан гэж бүртгэсэн ч админы компьютерт "
+                                f"{g['server'][:5]}-д анх холбогдсон (тэр хооронд админы компьютер асаалттай байсан).\n"
+                                "Сүлжээ тасарсан, эсвэл компьютерийн цагийг өөрчилж дахин ачаалсан байж болно.",
+                     font=(FONT, 10), fg=MUTED, bg=BG, justify="left").pack(anchor="w")
 
         prod = p["prod"]
         head = "Апп тус бүр"

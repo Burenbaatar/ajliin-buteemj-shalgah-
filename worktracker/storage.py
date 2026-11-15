@@ -20,7 +20,14 @@ _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 def _empty_day() -> dict:
     return {"work_seconds": 0.0, "away_seconds": 0.0, "first_seen": None, "last_seen": None,
-            "apps": {}, "periods": [], "flags": []}
+            "apps": {}, "periods": [], "flags": [], "clock_jumps": []}
+
+
+def shift_hms(t: str, delta_sec: float) -> str:
+    """"08:50:00" + 3060 сек → "09:41:00" (өдрийн хүрээнээс гарахгүй)."""
+    h, m, s = (int(x) for x in str(t).split(":"))
+    sec = max(0, min(86399, h * 3600 + m * 60 + s + int(round(delta_sec))))
+    return f"{sec // 3600:02d}:{sec % 3600 // 60:02d}:{sec % 60:02d}"
 
 
 def _read(path: Path, default):
@@ -127,13 +134,43 @@ class Storage:
     def update_flag_end(self, flag_id: str, end: str) -> None:
         self._close("flags", flag_id, end)
 
-    def set_meta(self, key: str, value: str) -> None:
+    def add_clock_jump(self, day: str, at: str, delta_sec: int, kind: str | None = None) -> None:
+        """Компьютерийн цаг өөрчлөгдсөн: [цаг (програмын зөв цагаар), хэдэн сек (сөрөг = ухраасан/хоцорсон)].
+        kind="server" — админы компьютертэй тулгахад илэрсэн (жишээ нь цагаа ухрааж дахин ачаалсан)."""
+        with self._lock:
+            d = self._day(day)
+            item = [at, int(delta_sec)] + ([kind] if kind else [])
+            d["clock_jumps"] = (d.get("clock_jumps") or [])[-99:] + [item]
+            self._save_day(day)
+
+    def marks(self, day: str) -> dict:
+        """Одоогийн бичлэгийн тоо, ирсэн/явсан цаг — shift_since()-д "эндээс хойш" гэж заана."""
+        with self._lock:
+            d = self._day(day)
+            return {"periods": len(d["periods"]), "flags": len(d["flags"]),
+                    "jumps": len(d.get("clock_jumps") or []), "first": d["first_seen"], "last": d["last_seen"]}
+
+    def shift_since(self, day: str, mark: dict, delta_sec: float, first: str | None, last: str | None) -> None:
+        """Програмын цагийг админы компьютертэй тулгаж засав: mark-аас хойш бичигдсэн цагуудыг delta-аар
+        шилжүүлж, ирсэн/явсан цагийг (tracker тооцоолсон) солино."""
+        with self._lock:
+            d = self._day(day)
+            for key in ("periods", "flags"):
+                for item in d[key][mark[key]:]:
+                    item["start"], item["end"] = shift_hms(item["start"], delta_sec), shift_hms(item["end"], delta_sec)
+            jumps = d.get("clock_jumps") or []
+            for j in jumps[min(mark["jumps"], len(jumps)):]:
+                j[0] = shift_hms(j[0], delta_sec)
+            d["first_seen"], d["last_seen"] = first, last
+            self._save_day(day)
+
+    def set_meta(self, key: str, value) -> None:
         with self._lock:
             self._meta[key] = value
             _write(self._meta_path, self._meta)
 
     # ------------------------------------------------------------------ унших
-    def get_meta(self, key: str) -> str | None:
+    def get_meta(self, key: str):
         with self._lock:
             return self._meta.get(key)
 
@@ -152,6 +189,7 @@ class Storage:
                 "apps": apps,
                 "periods": periods,
                 "flags": flags,
+                "clock_jumps": [list(j) for j in d.get("clock_jumps") or []],
             }
 
     def days_with_data(self) -> list[str]:

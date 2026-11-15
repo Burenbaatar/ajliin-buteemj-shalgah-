@@ -4,7 +4,8 @@
     company.json                      тохиргоо, хэлтэс, хүмүүсийн нэр/хэлтэс/идэвхтэй эсэх (зөвхөн админ бичнэ)
     people/<uid>/profile.json         ажилтны нэр, Windows хэрэглэгч, компьютер (ажилтны програм бичнэ)
     people/<uid>/live.json            одоогийн төлөв (минут тутам)
-    people/<uid>/days/<өдөр>.json     өдрийн дүн
+    people/<uid>/days/<өдөр>.json     өдрийн дүн (+ srv_first/srv_last — зөвхөн сервер бичнэ)
+    hub_uptime.json                   админы сервер асаалттай байсан үеүд (hub.py)
 
 Компьютер бүр зөвхөн өөрийн people/<uid>/ хавтсанд бичдэг тул хоёр компьютер нэг файлыг зэрэг засахгүй.
 ShareClient нь самбар (dashdata) болон CloudSync-ийн хэрэглэдэг select()/rpc() интерфэйстэй.
@@ -30,6 +31,8 @@ log = logging.getLogger(__name__)
 
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DEVICES_FILE = "devices.json"  # ажилтан бүрийн хувийн түлхүүр (hub.py) — зөвхөн админы компьютерт
+UPTIME_FILE = "hub_uptime.json"  # сервер асаалттай байсан үеүд (hub.py)
+HMS_RE = re.compile(r"^\d{2}:\d{2}:\d{2}$")
 STATUSES = ("working", "away", "offline")
 CAMERA_STATES = ("ok", "blocked", "static", "none")
 
@@ -63,6 +66,28 @@ class NetworkError(Exception):
 
 
 # ============================================================================ туслах
+def _clock_jumps(v) -> list:
+    """Ажилтны компьютерийн цаг өөрчлөгдсөн бүртгэл: [["09:41:05", -3060], ["09:41:07", -3060, "server"], ...]."""
+    out = []
+    for item in (v if isinstance(v, list) else [])[-100:]:
+        try:
+            at, delta, *kind = item
+            out.append([str(at)[:8], int(delta)] + ([str(kind[0])[:10]] if kind and kind[0] else []))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _srv_seen(old: dict, srv, day: str) -> dict:
+    """Сервер (hub.push) өгсөн [өдөр, цаг]: тухайн өдөрт анх/сүүлд холбогдсон цаг. Өмнөхийг хадгална."""
+    out = {k: old[k] for k in ("srv_first", "srv_last") if isinstance(old.get(k), str)}
+    if isinstance(srv, (list, tuple)) and len(srv) == 2 and srv[0] == day and HMS_RE.match(str(srv[1])):
+        hms = str(srv[1])
+        out["srv_first"] = min(out.get("srv_first") or hms, hms)
+        out["srv_last"] = max(out.get("srv_last") or hms, hms)
+    return out
+
+
 def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -329,6 +354,9 @@ class ShareClient:
                 if lv:
                     out.append(dict(lv, user_id=d.name))
             return out
+        if table == "wt_hub_uptime":
+            data = read_json(self.root / UPTIME_FILE, {}) or {}
+            return [{"day": k, "spans": v} for k, v in data.items() if isinstance(v, list)]                 if isinstance(data, dict) else []
         if table == "wt_daily":
             day_filter = filters.get("day")
             conds = list(day_filter) if isinstance(day_filter, (list, tuple)) else ([day_filter] if day_filter else [])
@@ -399,14 +427,19 @@ class ShareClient:
             self._profile_done = True
 
         if not p.get("p_live_only"):  # апп солигдоход зөвхөн live.json-г бичнэ (өдрийн дүн минут тутам)
-            write_json(me / "days" / f"{day}.json", {
+            day_path = me / "days" / f"{day}.json"
+            # srv_first/srv_last: зөвхөн админы сервер (hub.push → p_srv_now) — ажилтан өөрөө бичиж чадахгүй
+            srv = _srv_seen(read_json(day_path, {}) or {}, p.get("p_srv_now"), day)
+            write_json(day_path, {
                 "hostname": hostname,
                 "work_seconds": _clamp(p.get("p_work_seconds"), 0, 86400),
                 "away_seconds": _clamp(p.get("p_away_seconds"), 0, 86400),
                 "first_seen": _short(p.get("p_first_seen"), 8),
                 "last_seen": _short(p.get("p_last_seen"), 8),
                 "apps": p.get("p_apps") or [], "periods": p.get("p_periods") or [], "flags": p.get("p_flags") or [],
+                "clock_jumps": _clock_jumps(p.get("p_clock_jumps")),
                 "updated_at": now,
+                **srv,
             })
         if live:
             old = read_json(me / "live.json", {}) or {}

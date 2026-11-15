@@ -1,6 +1,7 @@
 """Telegram мэдэгдэл — зөвхөн админы компьютер дээр, 5 минут тутам хавтаснаас шалгана.
 
-⏰ ирээгүй · 🚶 удаан гарсан · ⚠️ ажлын цагаар програм хаалттай · 📷 камер таглагдсан · 🖼 хөдөлгөөнгүй царай.
+⏰ ирээгүй · 🚶 удаан гарсан · ⚠️ ажлын цагаар програм хаалттай · 📷 камер таглагдсан · 🖼 хөдөлгөөнгүй царай
+· 🕐 компьютерийн цагийг гараар өөрчилсөн / админы компьютерт ирсэн цагаасаа удаан холбогдоогүй.
 Нэг үйл явдлыг нэг л удаа илгээнэ (илгээсэн түүх: data_dir()/alerts_log.json).
 """
 from __future__ import annotations
@@ -10,7 +11,9 @@ import logging
 import threading
 from datetime import datetime, timedelta, timezone
 
+from .clock import zone
 from .config import data_dir, load_admin
+from .dashdata import clock_jump_text, server_gaps
 
 log = logging.getLogger(__name__)
 
@@ -37,14 +40,7 @@ def _hm(value, default: str | None = None):
 
 
 def _zone(name: str | None):
-    if name:
-        try:
-            from zoneinfo import ZoneInfo
-
-            return ZoneInfo(name)
-        except Exception:  # noqa: BLE001 — Windows дээр tzdata байхгүй байж болно
-            pass
-    return datetime.now().astimezone().tzinfo
+    return zone(name)  # ажилтнуудын програмтай ижил цагийн бүс (системийнх биш)
 
 
 def _minutes(s: dict, key: str, default: int) -> int:
@@ -56,7 +52,7 @@ def _minutes(s: dict, key: str, default: int) -> int:
 
 
 def collect(profiles, departments, live, today_rows, settings: dict, sent: dict,
-            now: datetime | None = None) -> list[tuple[str | None, str]]:
+            now: datetime | None = None, uptime=None) -> list[tuple[str | None, str]]:
     """Илгээх мессежүүдийг [(chat_id, текст)] буцаана. `sent`-д илгээснийг тэмдэглэнэ."""
     s = settings or {}
     now = now or datetime.now(timezone.utc)
@@ -130,6 +126,24 @@ def collect(profiles, departments, live, today_rows, settings: dict, sent: dict,
                     else f"🖼 {name(uid)}: камерт хөдөлгөөнгүй царай (зураг байж магадгүй) {when}-с")
             alert(uid, f"camera_{cam}", lv.get("camera_state_since") or today.isoformat(), text)
 
+    # 5) Компьютерийн цагийг гараар өөрчилсөн (цаг тоолоход нөлөөлөөгүй ч санаатай үйлдэл)
+    for r in today_rows:
+        uid = r.get("user_id")
+        if uid not in prof_by:
+            continue
+        for at, delta, *kind in r.get("clock_jumps") or []:
+            if kind and kind[0] == "server":
+                text = (f"🕐 {name(uid)}-ийн компьютерийн цаг {clock_jump_text(delta, 'server')} "
+                        f"({str(at)[:5]}-д илэрч, програм зассан)")
+            else:
+                text = f"🕐 {name(uid)} {str(at)[:5]}-д компьютерийнхээ цагийг {clock_jump_text(delta)}"
+            alert(uid, "clock", f"{today.isoformat()}|{r.get('hostname', '')}|{at}", text)
+        # 6) Програмын бүртгэлээр эрт ирсэн ч админы компьютерт (асаалттай байхад) удаан холбогдоогүй
+        for g in server_gaps([r], uptime):
+            alert(uid, "server_gap", f"{today.isoformat()}|{g['hostname']}",
+                  f"🕐 {name(uid)}: програм {g['first'][:5]}-д ирсэн гэж бүртгэсэн ч админы компьютерт "
+                  f"{g['server'][:5]}-д анх холбогдсон (сүлжээ тасарсан эсвэл цагаа өөрчилсөн байж болно)")
+
     cutoff = (now - timedelta(days=60)).isoformat(timespec="seconds")
     for k in [k for k, v in sent.items() if v < cutoff]:
         del sent[k]
@@ -173,9 +187,10 @@ class AlertRunner:
             sent = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             sent = {}
+        uptime = next((r["spans"] for r in self.share.select("wt_hub_uptime", day=f"eq.{today}")), [])
         msgs = collect(self.share.select("wt_profiles"), self.share.select("wt_departments"),
                        self.share.select("wt_live"), self.share.select("wt_daily", day=f"eq.{today}"),
-                       settings, sent, now)
+                       settings, sent, now, uptime=uptime)
         self.path.write_text(json.dumps(sent, ensure_ascii=False), encoding="utf-8")
         send = send or (lambda chat, text: tg_send(token, chat, text))
         for chat, text in msgs:

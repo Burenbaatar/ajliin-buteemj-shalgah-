@@ -2,6 +2,7 @@
 
 Анх холбогдохдоо хувийн түлхүүр авч `%APPDATA%\\AjliinButeemj\\device.json`-д хадгална, дараа нь хүсэлт бүрт
 HMAC гарын үсэг зурна. exe дотор нууц үг байхгүй — зөвхөн админы компьютерийн нэр, порт (hub.json).
+Серверийн хариу бүрийн X-Time-аар програмын цагийг админы компьютерийн цагт тааруулна (clock.Clock.sync).
 cloud.py-д share.ShareClient-тэй ИЖИЛ интерфэйстэй: available(), select("wt_company"), rpc("wt_push"), set_name().
 """
 from __future__ import annotations
@@ -16,6 +17,7 @@ import urllib.error
 import urllib.request
 
 from . import __version__
+from .clock import CLOCK
 from .config import data_dir
 from .hub import sign
 from .share import NetworkError, ShareError
@@ -79,14 +81,17 @@ class HubClient:
         raw = b"" if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if signed:
-            ts = str(int(time.time()))
+            ts = str(int(CLOCK.timestamp()))  # системийн цагийг ухраасан ч сервер хүлээн авна
             headers.update({"X-Uid": self.user_id, "X-Ts": ts, "X-Sig": sign(self._secret, ts, method, path, raw)})
         req = urllib.request.Request(self.base + path, data=raw if method == "POST" else None, headers=headers,
                                      method=method)
+        t0 = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
+                _sync_clock(resp.headers, t0)
                 return json.loads(resp.read().decode("utf-8") or "{}")
         except urllib.error.HTTPError as exc:
+            _sync_clock(exc.headers, t0)
             try:
                 msg = json.loads(exc.read().decode("utf-8")).get("message", "")
             except (ValueError, UnicodeDecodeError, AttributeError):
@@ -105,6 +110,12 @@ class HubClient:
         try:
             return self._http(method, path, body, timeout=timeout)
         except _HttpError as exc:
+            if exc.status == 401 and str(exc) == "clock skew":
+                # Энэ хариуны X-Time-аар цаг аль хэдийн тохирсон → нэг удаа дахин оролдоно
+                try:
+                    return self._http(method, path, body, timeout=timeout)
+                except _HttpError as exc2:
+                    raise _friendly(exc2) from None
             if exc.status == 401 and str(exc) == "unknown device":
                 # Админ түлхүүрийг шинэчилсэн (эсвэл шинэ сервер) → дахин бүртгүүлээд нэг удаа оролдоно
                 with self._lock:
@@ -174,6 +185,16 @@ class _HttpError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
         self.status = status
+
+
+def _sync_clock(headers, t0: float) -> None:
+    """Серверийн хариуны X-Time → програмын цаг (хуучин сервер энэ толгойг илгээдэггүй)."""
+    try:
+        server = float((headers or {}).get("X-Time"))
+    except (TypeError, ValueError):
+        return
+    rtt = time.monotonic() - t0
+    CLOCK.sync(server + rtt / 2, rtt)
 
 
 def _friendly(exc: _HttpError) -> ShareError:

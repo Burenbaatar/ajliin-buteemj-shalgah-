@@ -15,9 +15,10 @@ import socket
 import threading
 import time
 import uuid
-from datetime import date, timedelta
+from datetime import timedelta
 
 from . import __version__
+from .clock import CLOCK
 from .config import COMPANY_KEYS
 from .report import merge_periods
 from .storage import Storage
@@ -77,7 +78,7 @@ class CloudSync:
         if self._thread:
             self._thread.join(timeout=5)
         try:
-            self.push_day(date.today().isoformat(), live=True, status="offline", timeout=5)
+            self.push_day(CLOCK.today().isoformat(), live=True, status="offline", timeout=5)
         except Exception as exc:  # noqa: BLE001
             log.info("offline төлөв илгээж чадсангүй: %s", exc)
 
@@ -121,7 +122,7 @@ class CloudSync:
             if not self._history_done:
                 self._push_history()
                 self._history_done = True
-            self.push_day(date.today().isoformat(), live=True)
+            self.push_day(CLOCK.today().isoformat(), live=True)
             self._ok()
         except Exception as exc:  # noqa: BLE001
             self._fail(exc)
@@ -151,12 +152,13 @@ class CloudSync:
         rows = self.api.select("wt_company", "settings", id="eq.1")
         self._last_settings = time.monotonic()
         settings = (rows[0].get("settings") if rows else None) or {}
+        CLOCK.set_zone(settings.get("timezone"))  # зөвхөн админы тохиргооноос (ажилтны config.json-оос биш)
         for k in COMPANY_KEYS:
             if k in settings and settings[k] is not None:
                 self.cfg[k] = settings[k]
 
     def _push_history(self) -> None:
-        today = date.today()
+        today = CLOCK.today()
         oldest = (today - timedelta(days=HISTORY_DAYS)).isoformat()
         for day in self.storage.days_with_data():
             if oldest <= day < today.isoformat():
@@ -181,6 +183,7 @@ class CloudSync:
             "p_apps": [[a, int(s)] for a, s in d["apps"][:MAX_APPS]],
             "p_periods": [[p["status"], p["start"], p["end"]] for p in merge_periods(d["periods"])][-300:],
             "p_flags": [[f["kind"], f["start"], f["end"]] for f in d.get("flags", [])][-200:],
+            "p_clock_jumps": d.get("clock_jumps", [])[-100:],
             "p_live": live,
         }
         if live:
@@ -193,7 +196,7 @@ class CloudSync:
             return
         params = {"p_device_id": self.device_id, "p_hostname": self.hostname, "p_platform": self.platform,
                   "p_version": __version__,
-                  "p_day": date.today().isoformat(), "p_live": True, "p_live_only": True}
+                  "p_day": CLOCK.today().isoformat(), "p_live": True, "p_live_only": True}
         params.update(self._live_params(self.tracker.snapshot()))
         self.api.rpc("wt_push", params, timeout=10)
 

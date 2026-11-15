@@ -8,8 +8,9 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 from . import activity
+from .clock import CLOCK, SERVER_TOL_SEC, Clock
 from .presence import PresenceMonitor
-from .storage import Storage
+from .storage import Storage, shift_hms
 
 log = logging.getLogger(__name__)
 
@@ -29,10 +30,15 @@ def _hms(dt: datetime) -> str:
 
 
 class Tracker:
-    def __init__(self, cfg: dict, storage: Storage, presence: PresenceMonitor | None, on_report_due=None):
+    def __init__(self, cfg: dict, storage: Storage, presence: PresenceMonitor | None, on_report_due=None,
+                 clock: Clock | None = None):
         self.cfg = cfg
         self.storage = storage
         self.presence = presence
+        # Цагийг Windows-оос биш, програмын өөрийн цагаас авна (гараар өөрчлөхөд хуурагдахгүй) — clock.py
+        self.clock = clock or CLOCK
+        self.clock.attach(storage)
+        self._clock_flag_id: str | None = None
         self.on_report_due = on_report_due  # callback(now)
         self.on_status_change = None  # callback() — төлөв солигдоход (самбар руу даруй илгээх)
         self.on_app_change = None  # callback() — идэвхтэй апп солигдож APP_SETTLE_SEC тогтвортой болоход
@@ -53,7 +59,7 @@ class Tracker:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
-        now = datetime.now()
+        now = self.clock.now()
         self._day = now.date().isoformat()
         self._last_tick = time.monotonic()
         self._last_flush = self._last_tick
@@ -72,10 +78,12 @@ class Tracker:
         # Өнөөдрийн нийт дүн (цонхонд харуулах)
         self._load_today()
         self._period_id: int | None = None
+        self._mark_session()
 
     # ------------------------------------------------------------------ public
     def start(self) -> None:
-        self._open_period(WORKING, datetime.now())
+        with self._lock:
+            self._open_period(WORKING, self._poll())
         self._thread = threading.Thread(target=self._run, name="tracker", daemon=True)
         self._thread.start()
 
@@ -85,7 +93,8 @@ class Tracker:
             self._thread.join(timeout=5)
         with self._lock:
             self._commit_pending(to_work=False)  # баталгаажаагүй хугацааг ажилд тооцохгүй
-            self._flush(datetime.now())
+            self._flush(self._poll())
+            self.clock.save(self.storage, force=True)
 
     def snapshot(self) -> dict:
         """Цонхонд харуулах одоогийн төлөв."""
@@ -110,14 +119,14 @@ class Tracker:
 
     def flush_now(self) -> None:
         with self._lock:
-            self._flush(datetime.now())
+            self._flush(self._poll())
 
     def set_paused(self, paused: bool) -> None:
         """Гараар зогсоох / үргэлжлүүлэх. Зогссон хугацаа "гарсан"-д тооцогдоно (ажилласан цаг нэмэгдэхгүй)."""
         with self._lock:
             if paused == self.paused:
                 return
-            now = datetime.now()
+            now = self._poll()
             self.paused = paused
             if paused:
                 pending = self._commit_pending(to_work=False)
@@ -150,9 +159,10 @@ class Tracker:
         mono = time.monotonic()
         dt = mono - self._last_tick
         self._last_tick = mono
-        now = datetime.now()
 
         with self._lock:
+            now = self._poll()
+
             # Компьютер унтаад сэрсэн: завсрыг тоолохгүй, шинэ үе эхлүүлнэ
             if dt > MAX_GAP_SEC:
                 log.info("%.0f сек завсар (унтсан?) — тоолохгүй", dt)
@@ -162,6 +172,8 @@ class Tracker:
                 if now.date().isoformat() != self._day:
                     self._day = now.date().isoformat()
                     self._load_today()
+                    self._mark_session()
+                    self._reopen_clock_flag(now)
                 self._last_evidence = mono
                 self.status = AWAY if self.paused else WORKING
                 self._open_period(self.status, now)
@@ -175,7 +187,9 @@ class Tracker:
                 self._flag_id = self._flag_kind = None
                 self._day = day
                 self._load_today()
+                self._mark_session()
                 self._open_period(self.status, now.replace(hour=0, minute=0, second=0, microsecond=0))
+                self._reopen_clock_flag(now.replace(hour=0, minute=0, second=0, microsecond=0))
 
             # --- Мэдрэгчүүд
             locked = activity.is_screen_locked()
@@ -207,7 +221,7 @@ class Tracker:
 
             if evidence:
                 self._last_evidence = mono
-                self._commit_pending(to_work=True)
+                self._commit_pending(to_work=True, now=now)
                 self._add_work(app_key, dt, now)
                 if self.status != WORKING:
                     self._switch(WORKING, now)
@@ -247,16 +261,18 @@ class Tracker:
         t = _hms(now)
         if self._d_first is None:
             self._d_first = _hms(now - timedelta(seconds=sec))
-        self._d_last = t
+        if self._s_first is None:
+            self._s_first = self._d_first
+        self._d_last = self._s_last = t
 
     def _add_away(self, sec: float) -> None:
         self._d_away += sec
         self._today_away += sec
 
-    def _commit_pending(self, to_work: bool) -> float:
+    def _commit_pending(self, to_work: bool, now: datetime | None = None) -> float:
         total = sum(s for _, s in self._pending)
         if to_work:
-            now = datetime.now()
+            now = now or self.clock.now()
             for app, sec in self._pending:
                 self._add_work(app, sec, now)
         elif total:
@@ -285,6 +301,61 @@ class Tracker:
         if self.on_status_change:
             self.on_status_change()
 
+    # ------------------------------------------------------------------ програмын цаг
+    def _poll(self) -> datetime:
+        """self._lock дотор: програмын цагийн үйл явдлыг боловсруулаад одоогийн цагийг өгнө. Бичлэг бүр
+        үүгээр цаг авна — тэгснээр цаг засагдахаас өмнөх бичлэгийг л шилжүүлнэ."""
+        events, now = self.clock.poll()
+        if events:
+            self._on_clock_events(events, now)
+        self._update_clock_flag(now)
+        return now
+
+    def _on_clock_events(self, events: list[tuple[str, float]], now: datetime) -> None:
+        """Цаг тоолох нь програмын өөрийн цагаар зөв үргэлжилнэ — энд самбарт ⚠ харагдахаар бүртгэнэ."""
+        fix = sum(change for kind, change in events if kind == "sync")
+        if fix:
+            self._rebase(fix, now)
+            if abs(fix) > SERVER_TOL_SEC:  # бага зөрүү нь админы компьютерийн цаг бага зэрэг буруу байж болно
+                self.storage.add_clock_jump(self._day, _hms(now), -int(round(fix)), "server")
+        for kind, change in events:
+            if kind == "jump":
+                self.storage.add_clock_jump(self._day, _hms(now), int(round(change)))
+        if self.on_status_change:
+            self.on_status_change()
+
+    def _update_clock_flag(self, now: datetime) -> None:
+        """Системийн цаг өөрчлөгдсөн хэвээр байх хугацааг "clock" сэжигтэй үе болгож бүртгэнэ."""
+        if self.clock.tampered and self._clock_flag_id is None:
+            self._clock_flag_id = self.storage.open_flag(self._day, "clock", _hms(now))
+        elif not self.clock.tampered and self._clock_flag_id is not None:
+            self.storage.update_flag_end(self._clock_flag_id, _hms(now))
+            self._clock_flag_id = None
+
+    def _mark_session(self) -> None:
+        """Энэ цэгээс хойшхи бичлэгүүд програмын одоогийн цагаар хийгдэнэ (_rebase засах хүрээ)."""
+        self._s_mark = self.storage.marks(self._day)
+        self._s_first: str | None = None
+        self._s_last: str | None = None
+
+    def _rebase(self, fix: float, now: datetime) -> None:
+        """Програмын цагийг админы компьютертэй тулгаж fix сек засав → өмнө нь бичсэн цагуудыг шилжүүлнэ
+        (жишээ нь цагаа 51 мин ухрааж дахин ачаалсан: ирсэн цаг 08:50 → 09:41)."""
+        self._flush(now - timedelta(seconds=fix))  # хадгалаагүйг хуучин цагаар нь бичээд, хамтад нь шилжүүлнэ
+        m = self._s_mark
+        first = shift_hms(self._s_first, fix) if self._s_first else None
+        last = shift_hms(self._s_last, fix) if self._s_last else None
+        first = min(x for x in (m["first"], first) if x) if (m["first"] or first) else None
+        last = max(x for x in (m["last"], last) if x) if (m["last"] or last) else None
+        self.storage.shift_since(self._day, m, fix, first, last)
+        log.info("Өнөөдрийн бичлэгийг %+.0f сек шилжүүлэв (ирсэн %s → %s)", fix, self._s_first, first)
+        self._mark_session()
+
+    def _reopen_clock_flag(self, at: datetime) -> None:
+        """Өдөр солигдоход цаг өөрчлөгдсөн хэвээр байвал шинэ өдөрт үргэлжлүүлнэ."""
+        if self._clock_flag_id is not None:
+            self._clock_flag_id = self.storage.open_flag(self._day, "clock", _hms(at))
+
     def _open_period(self, status: str, at: datetime) -> None:
         self._period_id = self.storage.open_period(self._day, status, _hms(at))
 
@@ -300,4 +371,7 @@ class Tracker:
             self.storage.update_period_end(self._period_id, _hms(now))
         if self._flag_id is not None:
             self.storage.update_flag_end(self._flag_id, _hms(now))
+        if self._clock_flag_id is not None:
+            self.storage.update_flag_end(self._clock_flag_id, _hms(now))
+        self.clock.save(self.storage)
         self._last_flush = time.monotonic()

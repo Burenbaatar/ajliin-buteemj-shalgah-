@@ -5,7 +5,7 @@ import logging
 import signal
 import threading
 import time
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from datetime import time as dtime
 
 from .cloud import CloudSync
@@ -140,7 +140,7 @@ class App:
 
     def send_today(self) -> tuple[bool, str]:
         self.tracker.flush_now()
-        return send_report(self.cfg, self.storage, date.today().isoformat())
+        return send_report(self.cfg, self.storage, self.tracker.clock.today().isoformat())
 
     def run_headless(self) -> None:
         stop = threading.Event()

@@ -16,6 +16,10 @@
   GET  /api/update/version.json      — шинэ хувилбарын мэдээлэл
   GET  /api/update/<файл>            — шинэ exe (SHA-256-аар шалгагдана)
 Гарын үсэг: X-Uid, X-Ts (unix сек), X-Sig = hex(HMAC-SHA256(secret, "{ts}\\n{METHOD}\\n{path}\\n" + body)).
+
+Цаг: хариу бүр X-Time (серверийн unix цаг) толгойтой — ажилтны програм цагаа үүнд тааруулна (clock.Clock.sync).
+Сервер ажилтны өдрийн файлд өөрөө srv_first/srv_last (анх/сүүлд холбогдсон цаг) бичиж, өөрийн асаалттай
+байсан үеийг hub_uptime.json-д тэмдэглэнэ — ажилтан эдгээрийг өөрчилж чадахгүй (самбар харьцуулна).
 """
 from __future__ import annotations
 
@@ -28,11 +32,13 @@ import re
 import secrets
 import threading
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import APP_NAME
-from .share import DEVICES_FILE, ShareClient, ShareError, read_json, utcnow_iso, write_json
+from .clock import CLOCK
+from .share import DEVICES_FILE, UPTIME_FILE, ShareClient, ShareError, read_json, utcnow_iso, write_json
 
 log = logging.getLogger(__name__)
 
@@ -41,11 +47,19 @@ MAX_SKEW_SEC = 300
 UID_RE = re.compile(r"^[A-Za-z0-9._@-]{1,80}$")
 UPDATE_FILE_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 REGISTER_LIMIT_PER_HOUR = 30
+BEAT_SEC = 60          # серверийн асаалттай байсан үеийг ийм давтамжтай тэмдэглэнэ
+UPTIME_KEEP_DAYS = 40
 
 
 def sign(secret: str, ts: str, method: str, path: str, body: bytes) -> str:
     msg = f"{ts}\n{method.upper()}\n{path}\n".encode("utf-8") + body
     return hmac.new(bytes.fromhex(secret), msg, hashlib.sha256).hexdigest()
+
+
+def server_now() -> tuple[str, str]:
+    """Серверийн (админы компьютерийн) одоогийн өдөр, цаг компанийн цагийн бүсээр."""
+    t = datetime.fromtimestamp(time.time(), CLOCK.tz)
+    return t.date().isoformat(), t.strftime("%H:%M:%S")
 
 
 def _is_local(ip: str) -> bool:
@@ -72,6 +86,7 @@ class Hub:
         self._clients: dict[str, ShareClient] = {}
         self._registrations: dict[str, list[float]] = {}
         self._httpd: ThreadingHTTPServer | None = None
+        self._beat_stop = threading.Event()
 
     # ------------------------------------------------------------------ асаах / зогсоох
     def start(self) -> bool:
@@ -88,14 +103,45 @@ class Hub:
             return False
         self._httpd.daemon_threads = True
         threading.Thread(target=self._httpd.serve_forever, name="hub", daemon=True).start()
+        self._beat_stop.clear()
+        threading.Thread(target=self._beat_loop, name="hub-uptime", daemon=True).start()
         log.info("Сервер ажиллаж байна: TCP %d (ажилтнуудын програм энд өгөгдлөө илгээнэ)", self.port)
         return True
 
     def stop(self) -> None:
+        self._beat_stop.set()
         if self._httpd is not None:
             self._httpd.shutdown()
             self._httpd.server_close()
             self._httpd = None
+
+    # ------------------------------------------------------------------ асаалттай байсан үе
+    def _beat_loop(self) -> None:
+        while True:
+            try:
+                self.beat()
+            except Exception as exc:  # noqa: BLE001
+                log.debug("hub_uptime бичиж чадсангүй: %s", exc)
+            if self._beat_stop.wait(BEAT_SEC):
+                return
+
+    def beat(self) -> None:
+        """hub_uptime.json: {"2026-11-15": [["08:01:10", "12:30:05"], ...]} — сервер асаалттай байсан үеүд."""
+        day, hms = server_now()
+        path = self.root / UPTIME_FILE
+        with self._lock:
+            data = read_json(path, {})
+            data = data if isinstance(data, dict) else {}
+            spans = data.get(day) if isinstance(data.get(day), list) else []
+            last = spans[-1] if spans and isinstance(spans[-1], list) and len(spans[-1]) == 2 else None
+            if last and last[1] <= hms and _sec(hms) - _sec(last[1]) <= 3 * BEAT_SEC:
+                last[1] = hms
+            else:
+                spans.append([hms, hms])
+            data[day] = spans[-200:]
+            for old in sorted(data)[:-UPTIME_KEEP_DAYS]:
+                del data[old]
+            write_json(path, data)
 
     # ------------------------------------------------------------------ төхөөрөмж
     def _devices(self) -> dict:
@@ -148,6 +194,8 @@ class Hub:
     # ------------------------------------------------------------------ үйлдлүүд
     def push(self, uid: str, params: dict) -> dict:
         c = self._client(uid, str(params.get("p_name") or "")[:100])
+        params = dict(params)
+        params["p_srv_now"] = list(server_now())  # ажилтны илгээснийг дарж, серверийн цагаар (share._wt_push)
         try:
             return {"result": c.rpc("wt_push", params)}
         except ShareError as exc:
@@ -178,6 +226,7 @@ class _Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("X-Time", f"{time.time():.3f}")  # ажилтны програм цагаа тааруулна
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -239,3 +288,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         self._handle("POST")
+
+
+def _sec(hms: str) -> int:
+    h, m, sec = (int(x) for x in hms.split(":"))
+    return h * 3600 + m * 60 + sec
