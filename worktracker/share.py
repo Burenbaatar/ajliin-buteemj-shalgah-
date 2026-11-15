@@ -4,6 +4,7 @@
     company.json                      тохиргоо, хэлтэс, хүмүүсийн нэр/хэлтэс/идэвхтэй эсэх (зөвхөн админ бичнэ)
     people/<uid>/profile.json         ажилтны нэр, Windows хэрэглэгч, компьютер (ажилтны програм бичнэ)
     people/<uid>/live.json            одоогийн төлөв (минут тутам)
+    people/<uid>/face.json            царайн хээ (128 тоо × 5, зураг биш) эсвэл татгалзсан тэмдэг — ажилтан зөвшөөрвөл
     people/<uid>/days/<өдөр>.json     өдрийн дүн (+ srv_first/srv_last — зөвхөн сервер бичнэ)
     hub_uptime.json                   админы сервер асаалттай байсан үеүд (hub.py)
     hub_time.json                     админы компьютерийн цаг интернэтийнхээс хэр зөрүүтэй (hub.py)
@@ -16,6 +17,7 @@ from __future__ import annotations
 import getpass
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -36,7 +38,8 @@ UPTIME_FILE = "hub_uptime.json"  # сервер асаалттай байсан 
 TIME_FILE = "hub_time.json"  # админы компьютерийн цагийн зөрүү интернэтийнхээс (hub.py)
 HMS_RE = re.compile(r"^\d{2}:\d{2}:\d{2}$")
 STATUSES = ("working", "away", "offline")
-CAMERA_STATES = ("ok", "blocked", "static", "none")
+CAMERA_STATES = ("ok", "blocked", "static", "stranger", "none")
+FACE_FILE = "face.json"
 
 _MESSAGES = {
     "admin only": "Зөвхөн админ хийх боломжтой",
@@ -49,6 +52,8 @@ _MESSAGES = {
     "already registered": "Энэ нэрээр өөр төхөөрөмж бүртгэлтэй — админ \"Түлхүүр шинэчлэх\" дарна уу",
     "clock skew": "Компьютерийн цаг буруу байна — Windows-ийн цагаа тохируулна уу",
     "rate limit": "Хэт олон оролдлого — түр хүлээгээд дахин оролдоно",
+    "already enrolled": "Царай аль хэдийн бүртгэлтэй — дахин бүртгүүлэх бол админ \"Царай шинэчлэх\" дарна уу",
+    "invalid face data": "Царайн мэдээлэл буруу байна — дахин оролдоно уу",
 }
 
 
@@ -87,6 +92,33 @@ def _srv_seen(old: dict, srv, day: str) -> dict:
         hms = str(srv[1])
         out["srv_first"] = min(out.get("srv_first") or hms, hms)
         out["srv_last"] = max(out.get("srv_last") or hms, hms)
+    return out
+
+
+def face_status(f: dict) -> str | None:
+    """face.json → "enrolled" (бүртгэлтэй) / "declined" (татгалзсан) / None (асуугаагүй)."""
+    if isinstance(f, dict) and isinstance(f.get("embeddings"), list) and f["embeddings"]:
+        return "enrolled"
+    if isinstance(f, dict) and f.get("declined_at"):
+        return "declined"
+    return None
+
+
+def _embeddings(v) -> list | None:
+    """Царайн хээг шалгана: 1–10 ширхэг, тус бүр 128 бодит тоо."""
+    if not isinstance(v, list) or not 1 <= len(v) <= 10:
+        return None
+    out = []
+    for vec in v:
+        if not isinstance(vec, list) or len(vec) != 128:
+            return None
+        try:
+            nums = [float(x) for x in vec]
+        except (TypeError, ValueError):
+            return None
+        if not all(math.isfinite(x) and abs(x) <= 10 for x in nums):
+            return None
+        out.append([round(x, 5) for x in nums])
     return out
 
 
@@ -347,6 +379,7 @@ class ShareClient:
                     "department_id": over.get("department_id"),
                     "active": over.get("active", True),
                     "created_at": prof.get("created_at"),
+                    "face": face_status(read_json(d / FACE_FILE, {}) or {}),
                 })
             return out
         if table == "wt_live":
@@ -459,6 +492,34 @@ class ShareClient:
             })
         return "ok"
 
+    # ------------------------------------------------------------------ царай таних
+    def _wt_face_get(self, p: dict) -> dict:  # noqa: ARG002
+        """Энэ ажилтны (зөвхөн өөрийнх нь) царайн бүртгэл + админ царай танихыг асаасан эсэх."""
+        c = self.company()
+        if self.user_id in c["removed"]:
+            raise ShareError("removed by admin")
+        f = read_json(self.people_dir / self.user_id / FACE_FILE, {}) or {}
+        status = face_status(f)
+        return {"enabled": bool(c["settings"].get("face_recognition_enabled")), "status": status,
+                "embeddings": f["embeddings"] if status == "enrolled" else None}
+
+    def _wt_face_set(self, p: dict) -> str:
+        """Ажилтан зөвшөөрч бүртгүүлсэн (эсвэл татгалзсан). Дахин бүртгүүлэхэд админ эхлээд устгана —
+        ажилтан өөр хүний царайгаар солиж чадахгүй."""
+        if self._is_removed():
+            raise ShareError("removed by admin")
+        path = self.people_dir / self.user_id / FACE_FILE
+        if face_status(read_json(path, {}) or {}):
+            raise ShareError("already enrolled")
+        if p.get("p_declined"):
+            write_json(path, {"declined_at": utcnow_iso()})
+            return "declined"
+        emb = _embeddings(p.get("p_embeddings"))
+        if emb is None:
+            raise ShareError("invalid face data")
+        write_json(path, {"embeddings": emb, "consent": True, "enrolled_at": utcnow_iso()})
+        return "enrolled"
+
     def set_name(self, name: str) -> None:
         """Ажилтан нэрээ солибол дараагийн бичилтэд profile.json шинэчлэгдэнэ."""
         self.name = name
@@ -561,6 +622,17 @@ class ShareClient:
         self._require_admin()
         if not self._forget_device(str(p.get("p_user") or "")):
             raise ShareError("user not found")
+
+    def _wt_admin_reset_face(self, p: dict) -> None:
+        """Ажилтны царайн бүртгэлийг (эсвэл татгалзсан тэмдгийг) устгана → програм нь дахин бүртгүүлэхийг санал болгоно."""
+        self._require_admin()
+        uid = str(p.get("p_user") or "")
+        if not uid or "/" in uid or "\\" in uid or uid in (".", "..") or not (self.people_dir / uid).is_dir():
+            raise ShareError("user not found")
+        try:
+            (self.people_dir / uid / FACE_FILE).unlink()
+        except FileNotFoundError:
+            pass
 
     def _forget_device(self, uid: str) -> bool:
         path = self.root / DEVICES_FILE

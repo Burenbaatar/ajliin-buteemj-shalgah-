@@ -2,4 +2,4 @@
 
 APP_NAME = "AjliinButeemj"
 APP_TITLE = "Ажлын бүтээмж"
-__version__ = "3.3.2"
+__version__ = "3.4.0"

@@ -58,7 +58,8 @@ DEFAULTS: dict = {
 
 # Админ самбараас өөрчилж болох компанийн тохиргоо (wt_company.settings)
 COMPANY_KEYS = ("away_grace_sec", "input_counts_as_presence", "min_away_period_min", "report_time",
-                "liveness_enabled", "liveness_static_sec", "camera_blocked_sec")
+                "liveness_enabled", "liveness_static_sec", "camera_blocked_sec",
+                "face_recognition_enabled", "face_mismatch_sec")
 
 
 def is_frozen() -> bool:

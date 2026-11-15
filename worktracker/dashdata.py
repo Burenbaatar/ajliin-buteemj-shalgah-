@@ -10,8 +10,10 @@ OFFLINE_AFTER_SEC = 180  # сүүлийн мэдээллээс хойш ийм �
 SERVER_GAP_SEC = 15 * 60
 STATUS_TEXT = {"working": "Ажиллаж байна", "away": "Гарсан", "offline": "Офлайн"}
 FLAG_TEXT = {"static": "Сэжигтэй дүрс (зураг/видео?)", "blocked": "Камер таглагдсан",
-             "clock": "Компьютерийн цагийг өөрчилсөн"}
-CAMERA_TEXT = {"ok": "OK", "none": "олдсонгүй", "blocked": "таглагдсан", "static": "сэжигтэй дүрс"}
+             "clock": "Компьютерийн цагийг өөрчилсөн", "stranger": "Өөр хүн суусан (бүртгэлтэй царай биш)"}
+CAMERA_TEXT = {"ok": "OK", "none": "олдсонгүй", "blocked": "таглагдсан", "static": "сэжигтэй дүрс",
+               "stranger": "өөр хүн"}
+FACE_TEXT = {"enrolled": "✓ бүртгэлтэй", "declined": "татгалзсан"}
 
 DEFAULT_SETTINGS = {
     "work_start": "09:00", "work_end": "18:00", "lunch_start": "13:00", "lunch_end": "14:00",
@@ -211,7 +213,7 @@ def server_gaps(rows, spans) -> list[dict]:
 
 
 def flag_totals(flags) -> dict:
-    out = {"static": 0, "blocked": 0, "clock": 0}
+    out = {"static": 0, "blocked": 0, "clock": 0, "stranger": 0}
     for kind, a, b in flags or []:
         if kind in out:
             out[kind] += max(0, to_sec(b) - to_sec(a))
@@ -234,8 +236,8 @@ def fetch_raw(api: ShareClient, day: str) -> dict:
     company = api.select("wt_company", "settings", id="eq.1")
     return {
         "day": day,
-        "profiles": api.select("wt_profiles", "user_id,email,full_name,department_id,active,created_at,version",
-                               order="full_name"),
+        "profiles": api.select("wt_profiles", "user_id,email,full_name,department_id,active,created_at,version,"
+                                              "face", order="full_name"),
         "departments": api.select("wt_departments", "id,name,telegram_chat_id", order="name"),
         "live": fetch_live(api),
         "daily": api.select("wt_daily", "user_id,hostname,work_seconds,away_seconds,first_seen,last_seen,apps,"

@@ -7,11 +7,13 @@ import os
 import sys
 
 APP = "AjliinButeemj"
-VERSION = "3.3.2"
+VERSION = "3.4.0"
 
 datas = [("assets/face_detection_yunet_2023mar.onnx", "assets"),
          ("assets/face_antispoof_minifasnetv2.onnx", "assets"),
-         ("assets/face_antispoof_LICENSE.txt", "assets")]
+         ("assets/face_antispoof_LICENSE.txt", "assets"),
+         ("assets/face_recognition_sface_2021dec.onnx", "assets"),
+         ("assets/face_recognition_sface_LICENSE.txt", "assets")]
 # hub.json (админы компьютерийн нэр + порт, нууц зүйлгүй; --admin-setup үүсгэнэ) байвал програмд багцална
 if os.path.exists("hub.json"):
     datas.append(("hub.json", "."))

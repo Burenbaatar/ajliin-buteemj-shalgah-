@@ -25,8 +25,19 @@ from .uiutil import BG, FG, FONT, GREEN, MUTED, RED, Bg, button, clear, fmt_dur,
 
 log = logging.getLogger(__name__)
 TOP_N = 6
-CAMERA_WARN = {"blocked": "⚠ Камер таглагдсан байна", "static": "⚠ Сэжигтэй дүрс (зураг/видео?)"}
+CAMERA_WARN = {"blocked": "⚠ Камер таглагдсан байна", "static": "⚠ Сэжигтэй дүрс (зураг/видео?)",
+               "stranger": "⚠ Өөр хүн суусан (бүртгэлтэй царай биш)"}
 PAUSED_COLOR = "#9a6700"
+FACE_CHECK_SEC = 600  # админ царай танихыг асаасан эсэх, бүртгэлтэй эсэхийг ийм давтамжтай шалгана
+FACE_CONSENT_TEXT = (
+    "Админ царай танихыг асаасан байна — таны компьютер дээр өөр хүн сууж ажиллаж байгаа эсэхийг шалгана.\n\n"
+    "• Камер руу 5 секунд харж нэг удаа бүртгүүлнэ.\n"
+    "• Таны царайны ЗУРГИЙГ биш, 128 тооноос бүрдэх \"царайн хээ\"-г админы компьютерт хадгална. "
+    "Түүнээс зураг сэргээх боломжгүй.\n"
+    "• Зураг, бичлэг хэзээ ч хадгалахгүй.\n"
+    "• Таныг ажлаас гарахад (админ устгахад) хамт устна.\n\n"
+    "Зөвшөөрөх үү?"
+)
 
 
 class Tray:
@@ -181,6 +192,8 @@ class MainWindow:
         self.exit_btn = button(root, "Програмаас гарах", self.on_close, danger=True, font=(FONT, 11, "bold"))
         self.exit_btn.pack(fill="x", padx=16, pady=(0, 12), ipady=2)
         self.update_btn = button(root, "", self.install_update, primary=True)
+        self._face_next = time.monotonic() + 5  # эхлэхэд тохиргоо татагдтал хүлээнэ
+        self._face_asked = False
         self.refresh()
 
     def refresh(self) -> None:
@@ -218,6 +231,9 @@ class MainWindow:
             self._last_update_check = time.monotonic()
             self.check_update(auto=self.root.state() == "withdrawn")
         self.rows["cloud"].config(text=self.app.cloud_status())
+        if time.monotonic() >= self._face_next:
+            self._face_next = time.monotonic() + FACE_CHECK_SEC
+            self.check_face()
         for i, (a, b) in enumerate(self.app_rows):
             if i < len(s["top_apps"]):
                 name, sec = s["top_apps"][i]
@@ -347,6 +363,72 @@ class MainWindow:
             self.root.after_cancel(self._job)
         self.refresh()
 
+    # ------------------------------------------------------------------ царай таних
+    def check_face(self) -> None:
+        """Админ царай танихыг асаасан эсэх, энэ ажилтан бүртгэлтэй эсэхийг серверээс шалгана."""
+        pres = self.app.presence
+        if not self.app.api or pres is None or not pres.recognition_available:
+            return
+        self.bg.run(lambda: self.app.api.rpc("wt_face_get"), self._face_loaded,
+                    lambda e: log.info("Царайн бүртгэлийг шалгаж чадсангүй: %s", friendly(e)))
+
+    def _face_loaded(self, info) -> None:
+        info = info if isinstance(info, dict) else {}
+        pres = self.app.presence
+        enabled = bool(info.get("enabled"))
+        pres.set_reference(info.get("embeddings") if enabled and info.get("status") == "enrolled" else None)
+        if enabled and info.get("status") is None and not self._face_asked and pres.camera_ok \
+                and not self.app.tracker.paused:
+            self._face_asked = True
+            self.ask_face_consent()
+
+    def ask_face_consent(self) -> None:
+        self.root.deiconify()
+        self.root.lift()
+        choice = face_consent_dialog(self.root)
+        if choice == "yes":
+            return self._enroll_face()
+        if choice == "no" and messagebox.askyesno(
+                APP_TITLE, "Татгалзах уу?\n\nАдминд \"татгалзсан\" гэж харагдана. Дараа нь бүртгүүлэх бол админд "
+                           "хандана уу.", parent=self.root):
+            self.bg.run(lambda: self.app.api.rpc("wt_face_set", {"p_declined": True}), None,
+                        lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self.root))
+            return
+        self._face_asked = False  # дараагийн шалгалтаар (10 мин) дахин асууна
+
+    def _enroll_face(self) -> None:
+        win = tk.Toplevel(self.root)
+        win.title(APP_TITLE)
+        win.configure(bg=BG, padx=24, pady=18)
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.protocol("WM_DELETE_WINDOW", lambda: None)  # бүртгэж дуустал хаахгүй
+        tk.Label(win, text="📷 Камер руу шууд харна уу…", font=(FONT, 14, "bold"), fg=FG, bg=BG).pack(anchor="w")
+        tk.Label(win, text="Бүртгэж байна (5 сек). Камерт зөвхөн таны царай харагдах ёстой.", font=(FONT, 11),
+                 fg=MUTED, bg=BG).pack(anchor="w", pady=(6, 0))
+
+        def failed(e):
+            win.destroy()
+            self._face_asked = False
+            messagebox.showerror(APP_TITLE, f"Хадгалж чадсангүй: {friendly(e)}", parent=self.root)
+
+        def saved(emb):
+            win.destroy()
+            self.app.presence.set_reference(emb)
+            messagebox.showinfo(APP_TITLE, "Царай бүртгэгдлээ. Баярлалаа!", parent=self.root)
+
+        def captured(result):
+            emb, err = result
+            if not emb:
+                win.destroy()
+                if messagebox.askretrycancel(APP_TITLE, f"Бүртгэж чадсангүй: {err}", parent=self.root):
+                    return self._enroll_face()
+                self._face_asked = False
+                return
+            self.bg.run(lambda: self.app.api.rpc("wt_face_set", {"p_embeddings": emb}), lambda _: saved(emb), failed)
+
+        self.bg.run(lambda: self.app.presence.capture_embeddings(5, 20), captured, failed)
+
     def change_name(self) -> None:
         name = ask_name(self.root, self.app.cfg["employee_name"])
         if not name:
@@ -386,6 +468,31 @@ def ask_name(root: tk.Misc, current: str = "") -> str | None:
         name = name.strip()[:100]
         if name:
             return name
+
+
+def face_consent_dialog(parent: tk.Misc) -> str:
+    """Царай таних зөвшөөрөл: "yes" / "no" / "later" (цонхыг хаавал)."""
+    win = tk.Toplevel(parent)
+    win.title("Царай таних — зөвшөөрөл")
+    win.configure(bg=BG, padx=20, pady=16)
+    win.resizable(False, False)
+    win.transient(parent)
+    result = {"v": "later"}
+
+    def done(v: str) -> None:
+        result["v"] = v
+        win.destroy()
+
+    tk.Label(win, text=FACE_CONSENT_TEXT, font=(FONT, 11), fg=FG, bg=BG, justify="left", wraplength=480).pack(
+        anchor="w")
+    row = tk.Frame(win, bg=BG)
+    row.pack(fill="x", pady=(14, 0))
+    button(row, "Зөвшөөрч, бүртгүүлэх", lambda: done("yes"), primary=True).pack(side="left")
+    button(row, "Татгалзах", lambda: done("no")).pack(side="left", padx=8)
+    win.protocol("WM_DELETE_WINDOW", lambda: done("later"))
+    win.grab_set()
+    parent.wait_window(win)
+    return result["v"]
 
 
 def ask_hub(root: tk.Misc) -> dict | None:

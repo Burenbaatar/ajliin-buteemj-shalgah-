@@ -202,7 +202,8 @@ class Tracker:
             cam_ok = bool(self.presence and self.presence.camera_ok)
             self.camera_ok = cam_ok
             self.camera_state = self.presence.camera_state if self.presence else "none"
-            self._set_flag(self.camera_state if self.camera_state in ("static", "blocked") else None, now)
+            self._set_flag(self.camera_state if self.camera_state in ("static", "blocked", "stranger") else None,
+                           now)
             fresh = max(3.0, 2.5 * float(cfg["camera_check_interval_sec"]))
             face = cam_ok and (mono - self.presence.last_face_time) <= fresh
             self.face_visible = face
@@ -210,6 +211,8 @@ class Tracker:
 
             if locked or self.paused:
                 evidence = False
+            elif self.presence and self.presence.stranger:
+                evidence = False  # бүртгэлтэй ажилтан биш хүн сууж байна (гар хөдөлсөн ч тооцохгүй)
             elif cam_ok:
                 # A static face may be a photo. Do not let recent keyboard or
                 # mouse activity override a liveness challenge or warning.

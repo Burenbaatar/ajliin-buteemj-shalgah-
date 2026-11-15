@@ -1,6 +1,7 @@
 """Telegram мэдэгдэл — зөвхөн админы компьютер дээр, 5 минут тутам хавтаснаас шалгана.
 
 ⏰ ирээгүй · 🚶 удаан гарсан · ⚠️ ажлын цагаар програм хаалттай · 📷 камер таглагдсан · 🖼 хөдөлгөөнгүй царай
+· 👤 өөр хүн суусан (царай таних асаалттай бол)
 · 🕐 компьютерийн цагийг гараар өөрчилсөн / админы компьютерт ирсэн цагаасаа удаан холбогдоогүй.
 Нэг үйл явдлыг нэг л удаа илгээнэ (илгээсэн түүх: data_dir()/alerts_log.json).
 """
@@ -120,10 +121,11 @@ def collect(profiles, departments, live, today_rows, settings: dict, sent: dict,
                   f"⚠️ {name(uid)}-ийн програм {local_hm(lv['last_seen_at'])}-с хойш хаалттай/офлайн байна")
         # 4) Камер таглагдсан / хөдөлгөөнгүй царай
         cam = lv.get("camera_state")
-        if fresh and cam in ("blocked", "static"):
+        if fresh and cam in ("blocked", "static", "stranger"):
             when = local_hm(lv.get("camera_state_since"))
-            text = (f"📷 {name(uid)}-ийн камер таглагдсан байна ({when}-с)" if cam == "blocked"
-                    else f"🖼 {name(uid)}: камерт сэжигтэй дүрс (зураг/видео?) {when}-с")
+            text = {"blocked": f"📷 {name(uid)}-ийн камер таглагдсан байна ({when}-с)",
+                    "static": f"🖼 {name(uid)}: камерт сэжигтэй дүрс (зураг/видео?) {when}-с",
+                    "stranger": f"👤 {name(uid)}-ийн компьютер дээр өөр хүн сууж байна ({when}-с)"}[cam]
             alert(uid, f"camera_{cam}", lv.get("camera_state_since") or today.isoformat(), text)
 
     # 5) Компьютерийн цагийг гараар өөрчилсөн (цаг тоолоход нөлөөлөөгүй ч санаатай үйлдэл)

@@ -13,6 +13,8 @@
   POST /api/register                — {uid, name, hostname} → {secret}  (тухайн uid анх удаа л)
   POST /api/push        (гарын үсэг) — share._wt_push-тэй ижил талбарууд
   GET  /api/settings    (гарын үсэг) — админы тохиргоо
+  GET  /api/face        (гарын үсэг) — өөрийн царайн бүртгэл + царай таних асаалттай эсэх
+  POST /api/face        (гарын үсэг) — {embeddings} эсвэл {declined: true} (анх удаа л; дахин бол админ устгана)
   GET  /api/update/version.json      — шинэ хувилбарын мэдээлэл
   GET  /api/update/<файл>            — шинэ exe (SHA-256-аар шалгагдана)
 Гарын үсэг: X-Uid, X-Ts (unix сек), X-Sig = hex(HMAC-SHA256(secret, "{ts}\\n{METHOD}\\n{path}\\n" + body)).
@@ -249,6 +251,21 @@ class Hub:
             status = 403 if "removed" in str(exc) else 400
             raise HubError(status, str(exc)) from None
 
+    def _rpc(self, uid: str, fn: str, params: dict):
+        try:
+            return self._client(uid, "").rpc(fn, params)
+        except ShareError as exc:
+            msg = str(exc)
+            status = 403 if "removed" in msg else 409 if "already" in msg else 400
+            raise HubError(status, msg) from None
+
+    def face(self, uid: str) -> dict:
+        return self._rpc(uid, "wt_face_get", {})
+
+    def face_set(self, uid: str, body: dict) -> dict:
+        return {"result": self._rpc(uid, "wt_face_set", {"p_embeddings": body.get("embeddings"),
+                                                         "p_declined": bool(body.get("declined"))})}
+
     def settings(self, uid: str) -> dict:
         c = ShareClient({"local_path": str(self.root)}, uid).company()
         return {"settings": c["settings"], "removed": uid in c["removed"]}
@@ -310,6 +327,10 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send(200, self.hub.push(uid, self._json(raw)))
             if method == "GET" and path == "/api/settings":
                 return self._send(200, self.hub.settings(uid))
+            if method == "GET" and path == "/api/face":
+                return self._send(200, self.hub.face(uid))
+            if method == "POST" and path == "/api/face":
+                return self._send(200, self.hub.face_set(uid, self._json(raw)))
             raise HubError(404, "not found")
         except HubError as exc:
             self._send(exc.status, {"message": str(exc)})

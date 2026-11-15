@@ -34,7 +34,7 @@ def selftest(cfg, log_path) -> int:
     import platform
 
     from worktracker import activity
-    from worktracker.presence import FaceDetector
+    from worktracker.presence import FaceDetector, FaceRecognizer
     from worktracker.share import make_uid
 
     ok = True
@@ -44,6 +44,7 @@ def selftest(cfg, log_path) -> int:
         ("Идэвхгүй (сек)", activity.get_idle_seconds),
         ("Түгжээтэй", activity.is_screen_locked),
         ("Царай илрүүлэгч", lambda: type(FaceDetector()).__name__ + " OK"),
+        ("Царай таних", lambda: type(FaceRecognizer()).__name__ + " OK"),
     ]:
         try:
             lines.append(f"  {name:<16}: {fn()}")

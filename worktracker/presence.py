@@ -1,6 +1,11 @@
 """Камераар хүн (царай) байгаа эсэхийг шалгана.
 
 Зураг, бичлэг ХАДГАЛАХГҮЙ: кадр зөвхөн санах ойд шалгагдаад шууд устана.
+
+Царай таних (админ асаасан бол): ажилтан анх зөвшөөрч бүртгүүлэхэд царайн "хээ" (SFace, 128 тоо — зураг биш,
+түүнээс зураг сэргээх боломжгүй) админы серверт хадгалагдана. RECOG_EVERY_SEC тутам камерын өмнөх царайг түүнтэй
+харьцуулж, face_mismatch_sec дараалан таарахгүй бол "өөр хүн суусан" (stranger) гэж үзнэ. Зураг/бичлэгээр хуурахыг
+FaceSpoofDetector + Liveness, өөр амьд хүн суухыг FaceRecognizer илрүүлнэ.
 """
 from __future__ import annotations
 
@@ -21,7 +26,12 @@ log = logging.getLogger(__name__)
 
 YUNET_MODEL = "face_detection_yunet_2023mar.onnx"
 SPOOF_MODEL = "face_antispoof_minifasnetv2.onnx"
+SFACE_MODEL = "face_recognition_sface_2021dec.onnx"
 DETECT_WIDTH = 320  # хурдан ажиллуулахын тулд кадрыг жижигрүүлнэ
+MATCH_THRESHOLD = 0.363    # SFace cosine: үүнээс их бол нэг хүн (OpenCV-ийн зөвлөсөн утга)
+RECOG_EVERY_SEC = 15.0     # царайг ийм давтамжтай харьцуулна (~30 мс — компьютерт ачаалал өгөхгүй)
+MIN_FACE_PX = 80           # үүнээс жижиг (хол) царайг харьцуулахгүй — найдвартай биш
+STRANGER_CLEAR_SEC = 60.0  # царай ийм удаан харагдахгүй бол "өөр хүн" төлөвийг цуцална
 
 
 class FaceDetector:
@@ -30,6 +40,7 @@ class FaceDetector:
     def __init__(self, score_threshold: float = 0.6):
         self._yunet = None
         self._haar = None
+        self.last_rows: list = []  # сүүлийн detect_faces()-ийн YuNet мөрүүд (эх кадрын хэмжээгээр) — SFace-д
         model = resource_path("assets", YUNET_MODEL)
         if model.is_file() and hasattr(cv2, "FaceDetectorYN"):
             self._yunet = cv2.FaceDetectorYN.create(
@@ -49,11 +60,15 @@ class FaceDetector:
         scale = DETECT_WIDTH / float(w)
         small = cv2.resize(frame, (DETECT_WIDTH, int(h * scale)))
         found: list = []
+        self.last_rows = []
         if self._yunet is not None:
             self._yunet.setInputSize((small.shape[1], small.shape[0]))
             _, faces = self._yunet.detect(small)
             if faces is not None:
                 for f in faces:
+                    row = f[:15].astype("float32").copy()
+                    row[:14] /= scale  # бокс + нүд, хамар, амны цэгүүд → эх кадрын хэмжээ
+                    self.last_rows.append(row)
                     box = tuple(int(v / scale) for v in f[:4])
                     points = tuple((float(f[i] / scale), float(f[i + 1] / scale))
                                    for i in range(4, 14, 2))
@@ -67,6 +82,35 @@ class FaceDetector:
     def detect(self, frame) -> list[tuple[int, int, int, int]]:
         """Return face boxes in original frame coordinates."""
         return [box for box, _ in self.detect_faces(frame)]
+
+    @property
+    def can_align(self) -> bool:
+        """Нүд, хамрын цэгтэй (YuNet) — царай танихад хэрэгтэй."""
+        return self._yunet is not None
+
+
+class FaceRecognizer:
+    """SFace: царайг 128 тоот "хээ" болгоно (зураг биш). Ижил хүний хээ cosine ≥ MATCH_THRESHOLD."""
+
+    def __init__(self):
+        model = resource_path("assets", SFACE_MODEL)
+        if not model.is_file() or not hasattr(cv2, "FaceRecognizerSF"):
+            raise RuntimeError(f"Царай таних загвар олдсонгүй: {model}")
+        self._sf = cv2.FaceRecognizerSF.create(str(model), "")
+
+    def embed(self, frame, row):
+        """Кадр + YuNet мөр → нэгж урттай 128 тоот вектор."""
+        import numpy as np
+
+        f = self._sf.feature(self._sf.alignCrop(frame, row)).flatten().astype(np.float32)
+        return f / (float(np.linalg.norm(f)) + 1e-9)
+
+    @staticmethod
+    def similarity(vec, refs) -> float:
+        """Бүртгэлийн хэд хэдэн хээнээс хамгийн ойрынх (cosine)."""
+        import numpy as np
+
+        return float(np.max(np.asarray(refs, dtype=np.float32) @ vec))
 
 
 class FaceSpoofDetector:
@@ -280,12 +324,116 @@ class PresenceMonitor:
         self.last_face_time = 0.0  # амьд царай харагдсан сүүлийн цаг (time.monotonic())
         self.face_static = False   # царай байгаа ч хөдөлгөөнгүй (зураг байж магадгүй)
         self.blocked = False       # камер таглагдсан / хар
+        # Царай таних (YuNet + SFace байвал). _refs — серверээс авсан бүртгэлийн хээнүүд (k×128).
+        # SFace-ийг хэрэгтэй үед л ачаална (+38 MB санах ой) — админ асаагаагүй бол огт ачаалахгүй.
+        self.recognition_available = (self.detector.can_align and hasattr(cv2, "FaceRecognizerSF")
+                                      and resource_path("assets", SFACE_MODEL).is_file())
+        self._recognizer: FaceRecognizer | None = None
+        self._refs = None
+        self.stranger = False       # бүртгэлтэй ажилтан биш хүн камерын өмнө удаан байна
+        self.face_similarity: float | None = None
+        self._mismatch_since: float | None = None
+        self._last_recog = 0.0
+        self._last_face_seen = 0.0
+        self._capture: dict | None = None  # capture_embeddings() хүсэлт (камерын thread гүйцэтгэнэ)
         self._dark_since: float | None = None
         self._cap = None
         self._stop = threading.Event()
         self._paused = threading.Event()   # "Зогсоох" дарсан → камерыг хааж, гэрлийг унтраана
         self._reopen_now = False           # "Үргэлжлүүлэх" дарсан → 10 сек хүлээлгүй шууд нээнэ
         self._thread: threading.Thread | None = None
+
+    # ------------------------------------------------------------------ царай таних
+    @property
+    def recognizer(self) -> FaceRecognizer | None:
+        if self._recognizer is None and self.recognition_available:
+            try:
+                self._recognizer = FaceRecognizer()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Царай таних боломжгүй: %s", exc)
+                self.recognition_available = False
+        return self._recognizer
+
+    @recognizer.setter
+    def recognizer(self, value) -> None:
+        self._recognizer = value
+        self.recognition_available = value is not None
+
+    def set_reference(self, embeddings) -> None:
+        """Серверээс ирсэн бүртгэлийн хээнүүд (None = таних унтраалттай / бүртгэлгүй)."""
+        import numpy as np
+
+        refs = None
+        if embeddings:
+            try:
+                refs = np.asarray(embeddings, dtype=np.float32).reshape(-1, 128)
+            except (TypeError, ValueError):
+                refs = None
+        if (refs is None) != (self._refs is None):
+            log.info("Царай таних: %s", "асаалттай" if refs is not None else "унтраалттай")
+        self._refs = refs
+        if refs is None:
+            self.stranger, self._mismatch_since = False, None
+            if self._capture is None:
+                self._recognizer = None  # санах ойг чөлөөлнө (дахин хэрэгтэй бол ачаална)
+
+    def capture_embeddings(self, n: int = 5, timeout: float = 20.0) -> tuple[list | None, str]:
+        """Бүртгүүлэх: камерын өмнөх ганц царайнаас n хээ авна (арын thread-ээс дуудна). (хээнүүд, алдаа)."""
+        import numpy as np
+
+        if self.recognizer is None:
+            return None, "Энэ компьютер дээр царай таних боломжгүй"
+        if self._paused.is_set() or not self.camera_ok:
+            return None, "Камер ажиллахгүй байна (зогсоосон эсэхийг шалгана уу)"
+        req = {"n": n, "out": [], "err": "", "done": threading.Event()}
+        self._capture = req
+        req["done"].wait(timeout)
+        self._capture = None
+        out = list(req["out"])
+        if len(out) < n:
+            return None, req["err"] or "Царай тод харагдсангүй"
+        sims = np.asarray(out) @ np.asarray(out).T
+        if float(sims.min()) < MATCH_THRESHOLD:
+            return None, "Царай тогтворгүй байна (өөр хүн харагдсан?) — дахин оролдоно уу"
+        return [[round(float(x), 5) for x in v] for v in out], ""
+
+    def _enroll_step(self, frame, faces, rows, req: dict) -> None:
+        if len(faces) != 1 or len(rows) != 1:
+            req["err"] = "Камерт зөвхөн таны царай харагдах ёстой" if faces else "Царай харагдахгүй байна"
+            return
+        if faces[0][2] < MIN_FACE_PX:
+            req["err"] = "Камер руу ойртож харна уу"
+            return
+        req["out"].append(self.recognizer.embed(frame, rows[0]))
+        if len(req["out"]) >= req["n"]:
+            req["done"].set()
+
+    def _recognize(self, frame, faces, rows, now: float) -> None:
+        refs = self._refs
+        rec = None
+        if refs is not None and rows and self.cfg.get("face_recognition_enabled"):
+            rec = self.recognizer  # энд л ачаална
+        if rec is None:
+            self.stranger, self._mismatch_since = False, None
+            return
+        if now - self._last_recog < RECOG_EVERY_SEC:
+            return
+        i = max(range(len(faces)), key=lambda k: faces[k][2] * faces[k][3])  # хамгийн ойрын (том) царай
+        if faces[i][2] < MIN_FACE_PX or i >= len(rows):
+            return
+        self._last_recog = now
+        sim = rec.similarity(rec.embed(frame, rows[i]), refs)
+        self.face_similarity = sim
+        if sim >= MATCH_THRESHOLD:
+            if self.stranger:
+                log.info("Бүртгэлтэй ажилтан эргэж ирлээ (%.2f)", sim)
+            self.stranger, self._mismatch_since = False, None
+            return
+        if self._mismatch_since is None:
+            self._mismatch_since = now
+        if not self.stranger and now - self._mismatch_since >= float(self.cfg.get("face_mismatch_sec", 180)):
+            log.info("Өөр хүн суусан бололтой (ижил төстэй %.2f, %.0f сек)", sim, now - self._mismatch_since)
+            self.stranger = True
 
     def set_paused(self, paused: bool) -> None:
         """Зогсоосон үед камер огт ажиллахгүй. Камерын thread ≤ 1 сек-д хааж / дахин нээнэ."""
@@ -304,6 +452,8 @@ class PresenceMonitor:
             return "blocked"
         if self.face_static:
             return "static"
+        if self.stranger:
+            return "stranger"
         return "ok"
 
     @property
@@ -330,12 +480,20 @@ class PresenceMonitor:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         self._check_blocked(gray, now)
         faces = [] if self.blocked else self.detector.detect_faces(frame)
+        boxes = [box for box, _ in faces]
+        rows = self.detector.last_rows if faces else []
+        req = self._capture
+        if req is not None and not req["done"].is_set():
+            self._enroll_step(frame, boxes, rows, req)
         if not faces:
             self.liveness.update_challenge(None, now)
             self.liveness.reset()
             self.spoof_detector.reset()
             self.face_static = self.liveness.challenge_failed
+            if now - self._last_face_seen > STRANGER_CLEAR_SEC:
+                self.stranger, self._mismatch_since = False, None
             return
+        self._last_face_seen = now
         if self.cfg.get("liveness_enabled", True):
             box, points = max(faces, key=lambda item: item[0][2] * item[0][3])
             self.liveness.update_challenge(points, now)
@@ -349,7 +507,8 @@ class PresenceMonitor:
         else:
             self.liveness.defer_challenge()
             self.face_static = False
-        if not self.face_static:
+        self._recognize(frame, boxes, rows, now)
+        if not self.face_static and not self.stranger:
             self.last_face_time = now
 
     def start(self) -> None:
@@ -379,7 +538,8 @@ class PresenceMonitor:
                     self._cap = None
                     log.info("Зогсоосон: камерыг хаалаа")
                 self.camera_ok = False
-                self.blocked = self.face_static = False
+                self.blocked = self.face_static = self.stranger = False
+                self._mismatch_since = None
                 self._dark_since = None
                 self.liveness.reset()
                 self._stop.wait(0.3)
@@ -420,27 +580,45 @@ class PresenceMonitor:
 
 
 def camera_test(camera_index: int = 0) -> None:
-    """Камер, царай илрүүлэлтийг шалгах цонх (юу ч хадгалахгүй). Q эсвэл Esc дарж гарна."""
+    """Камер, царай илрүүлэлт, танилтыг шалгах цонх (юу ч хадгалахгүй). E — царайгаа бүртгэх (зөвхөн энэ
+    цонхонд, санах ойд), дараа нь "Mon" (мөн хүн) / "Oor hun" (өөр хүн) гэж харуулна. Q эсвэл Esc — гарах."""
     detector = FaceDetector()
+    try:
+        recognizer = FaceRecognizer() if detector.can_align else None
+    except Exception:  # noqa: BLE001
+        recognizer = None
     cap = _open_camera(camera_index)
     if cap is None:
         print(f"Камер нээгдсэнгүй (index={camera_index})")
         return
-    print("Камерын тест: Q эсвэл Esc дарж гарна.")
+    print("Камерын тест: E — царай бүртгэх (хадгалахгүй), Q эсвэл Esc — гарах.")
+    refs: list = []
     try:
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
             faces = detector.detect(frame)
+            rows = detector.last_rows
             for x, y, w, h in faces:
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 200, 0), 2)
             label = "Hun baina" if faces else "Hun alga"
             color = (0, 200, 0) if faces else (0, 0, 220)
+            if faces and rows and recognizer is not None and refs:
+                i = max(range(len(faces)), key=lambda k: faces[k][2] * faces[k][3])
+                sim = recognizer.similarity(recognizer.embed(frame, rows[i]), refs)
+                same = sim >= MATCH_THRESHOLD
+                label, color = f"{'Mon' if same else 'Oor hun'} ({sim:.2f})", (0, 200, 0) if same else (0, 0, 220)
+            elif recognizer is not None and not refs:
+                label += "  |  E: tsarai burtgeh"
             cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
             cv2.imshow("Camera test", frame)
-            if cv2.waitKey(30) & 0xFF in (ord("q"), 27):
+            key = cv2.waitKey(30) & 0xFF
+            if key in (ord("q"), 27):
                 break
+            if key in (ord("e"), ord("E")) and recognizer is not None and len(faces) == 1 and rows:
+                refs.append(recognizer.embed(frame, rows[0]))
+                print(f"Царай бүртгэлээ ({len(refs)} дээж) — зөвхөн энэ тестэд, хадгалахгүй")
     finally:
         cap.release()
         cv2.destroyAllWindows()

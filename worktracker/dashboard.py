@@ -233,7 +233,7 @@ class Dashboard(tk.Toplevel):
         legend = tk.Frame(tab, bg=BG)
         legend.pack(fill="x", padx=6, pady=(0, 4))
         for color, text in ((GREEN, "Ажилласан"), (RED, "Гарсан"), (GAP, "Програм ажиллаагүй"), (LUNCH, "Цайны цаг"),
-                            (ORANGE, "Сэжигтэй (зураг / таглагдсан камер)")):
+                            (ORANGE, "Сэжигтэй (зураг / таглагдсан камер / өөр хүн)")):
             tk.Label(legend, text="■", fg=color, bg=BG, font=(FONT, 12)).pack(side="left")
             tk.Label(legend, text=text + "   ", fg=MUTED, bg=BG, font=(FONT, 10)).pack(side="left")
         tk.Label(legend, text="Мөр дээр дарж дэлгэрэнгүйг харна", fg=MUTED, bg=BG, font=(FONT, 10)).pack(side="right")
@@ -289,7 +289,7 @@ class Dashboard(tk.Toplevel):
             cv.create_rectangle(0, y, total_w, y + ROW_H, fill=BG, outline="", tags=(tag, "bgrow"))
             cv.create_line(0, y + ROW_H - 1, total_w, y + ROW_H - 1, fill=GAP)
             x = 12
-            warn = p["camera_state"] in ("static", "blocked") or p["suspicious"]
+            warn = p["camera_state"] in ("static", "blocked", "stranger") or p["suspicious"]
             cv.create_text(x, y + 15, anchor="w", text=("⚠ " if warn else "") + p["name"][:24],
                            font=(FONT, 12, "bold"), fill=ORANGE if warn else FG, tags=tag)
             sub = " · ".join(t for t in (p["department"], (p["live"] or {}).get("hostname", "")) if t)
@@ -405,10 +405,10 @@ class Dashboard(tk.Toplevel):
         tab = tk.Frame(self.nb, bg=BG)
         self.users_tab = tab
         self.nb.add(tab, text="Хэрэглэгчид")
-        cols = ("name", "host", "dept", "active", "ver")
+        cols = ("name", "host", "dept", "active", "ver", "face")
         self.users_tv = ttk.Treeview(tab, columns=cols, show="headings", selectmode="browse")
-        for c, title, w in zip(cols, ("Нэр", "Компьютер (хэрэглэгч@компьютер)", "Хэлтэс", "Төлөв", "Хувилбар"),
-                               (230, 300, 190, 95, 90)):
+        for c, title, w in zip(cols, ("Нэр", "Компьютер (хэрэглэгч@компьютер)", "Хэлтэс", "Төлөв", "Хувилбар", "Царай"),
+                               (220, 280, 180, 90, 80, 110)):
             self.users_tv.heading(c, text=title)
             self.users_tv.column(c, width=w, anchor="w")
         self.users_tv.tag_configure("new", background=PENDING_BG)
@@ -431,11 +431,13 @@ class Dashboard(tk.Toplevel):
         button(form, "Хадгалах", self._save_user, primary=True).grid(row=1, column=4, padx=(0, 10))
         button(form, "🗑 Бүрмөсөн устгах", self._remove_user).grid(row=1, column=6, padx=(0, 10))
         button(form, "Устгасан хүмүүс…", self._show_removed).grid(row=1, column=7, padx=(0, 10))
-        button(form, "Түлхүүр шинэчлэх", self._reset_device).grid(row=1, column=8)
+        button(form, "Түлхүүр шинэчлэх", self._reset_device).grid(row=1, column=8, padx=(0, 10))
+        button(form, "Царай шинэчлэх", self._reset_face).grid(row=1, column=9)
         tk.Label(tab, text="Програм суулгасан хүн энд автоматаар гарна (хэлтэсгүй бол шараар). Хэлтсийг нь оноогоод "
                            "Хадгалах. Ажлаас гарсан хүнийг \"Бүрмөсөн устгах\" — түүний програм дахин бичихгүй.\n"
                            "\"Түлхүүр шинэчлэх\" — ажилтан програмаа дахин суулгасан / компьютер сольсон үед "
-                           "(\"түлхүүр таарахгүй\" гэж гарвал).",
+                           "(\"түлхүүр таарахгүй\" гэж гарвал). \"Царай шинэчлэх\" — царайг дахин бүртгүүлэх "
+                           "(царайн хээ устаж, програм нь 10 минутын дотор дахин асууна).",
                  bg=BG, fg=MUTED, font=(FONT, 10)).pack(anchor="w", padx=6, pady=(0, 6))
 
     def _render_users(self) -> None:
@@ -449,7 +451,8 @@ class Dashboard(tk.Toplevel):
             tags = ("inactive",) if not p["active"] else (("new",) if p["department_id"] is None else ())
             tv.insert("", "end", iid=p["user_id"], tags=tags, values=(
                 p["full_name"] or "—", p["email"], dept.get(p["department_id"], "—"),
-                "Идэвхтэй" if p["active"] else "Хаалттай", p.get("version") or "хуучин"))
+                "Идэвхтэй" if p["active"] else "Хаалттай", p.get("version") or "хуучин",
+                dd.FACE_TEXT.get(p.get("face") or "", "—")))
         self.u_dept_cb.configure(values=["—"] + [d["name"] for d in self.data["departments"]])
         if sel and tv.exists(sel[0]):
             tv.selection_set(sel[0])
@@ -510,6 +513,19 @@ class Dashboard(tk.Toplevel):
                     lambda _: self.info.config(text=f"{name}: түлхүүр шинэчлэгдлээ", fg=GREEN),
                     lambda e: messagebox.showerror(APP_TITLE, friendly(e) if "not found" not in str(e) else
                                                    "Энэ хүн хуучин хувилбартай (түлхүүргүй) байна.", parent=self))
+
+    def _reset_face(self) -> None:
+        p = self._selected_profile()
+        if not p:
+            return messagebox.showinfo(APP_TITLE, "Жагсаалтаас хүн сонгоно уу", parent=self)
+        name = p["full_name"] or p["email"]
+        if not messagebox.askyesno(APP_TITLE, f"{name}-ийн царайн бүртгэлийг устгах уу?\n\n"
+                                              "Тэр хүний програм 10 минутын дотор дахин бүртгүүлэхийг санал болгоно "
+                                              "(зөвшөөрөл дахин асууна). Цагийн түүх хэвээр үлдэнэ.", parent=self):
+            return
+        self.bg.run(lambda: self.api.rpc("wt_admin_reset_face", {"p_user": p["user_id"]}),
+                    lambda _: (self.info.config(text=f"{name}: царайн бүртгэл устлаа", fg=GREEN), self.refresh()),
+                    lambda e: messagebox.showerror(APP_TITLE, friendly(e), parent=self))
 
     def _show_removed(self) -> None:
         self.bg.run(lambda: self.api.company()["removed"], self._removed_loaded,
@@ -681,6 +697,13 @@ class Dashboard(tk.Toplevel):
               to=900, increment=10)
         field(f, 4, "Тайланд жагсаах богино гарсан хугацаа (мин)", "min_away_period_min", "spin", from_=1, to=60)
         field(f, 5, "Өдрийн тайлан илгээх цаг (имэйл/Telegram)", "report_time")
+        field(f, 6, "Царай таних (өөр хүн суувал илрүүлэх)", "face_recognition_enabled", "check")
+        field(f, 7, "  … хэдэн секунд дараалан таарахгүй бол өөр хүн", "face_mismatch_sec", "spin", from_=60, to=900,
+              increment=30)
+        tk.Label(f, text="Асаахад ажилтан бүрээс зөвшөөрөл асууж, камер руу 5 сек харуулж бүртгэнэ. Зураг биш, "
+                         "царайн хээ (128 тоо)\nэнэ компьютерт хадгалагдана. Өөр хүн суувал ажилласан цагт "
+                         "тооцохгүй, ⚠ + Telegram мэдэгдэл.",
+                 bg=BG, fg=MUTED, font=(FONT, 10), justify="left").grid(row=8, column=0, columnspan=2, sticky="w")
 
         f = section(0, "Апп ангилал (мөр бүрт нэг түлхүүр үг)")
         tk.Label(f, text="Бүтээмжтэй", bg=BG, fg=GREEN, font=(FONT, 11, "bold")).grid(row=0, column=0, sticky="w")
@@ -737,6 +760,7 @@ class Dashboard(tk.Toplevel):
         s = dd.settings_with_defaults(raw)
         defaults = {"away_grace_sec": 20, "input_counts_as_presence": True, "liveness_enabled": True,
                     "liveness_static_sec": 120, "min_away_period_min": 1, "report_time": "18:00",
+                    "face_recognition_enabled": False, "face_mismatch_sec": 180,
                     "alerts_enabled": False, "alert_late_min": 30, "alert_away_min": 40, "alert_offline_min": 15}
         for key, var in self.sv.items():
             val = s.get(key, defaults.get(key))
@@ -762,9 +786,9 @@ class Dashboard(tk.Toplevel):
                 datetime.strptime(v, "%H:%M")
             new[key] = v
         for key in ("late_grace_min", "away_grace_sec", "liveness_static_sec", "min_away_period_min",
-                    "alert_late_min", "alert_away_min", "alert_offline_min"):
+                    "alert_late_min", "alert_away_min", "alert_offline_min", "face_mismatch_sec"):
             new[key] = int(self.sv[key].get())
-        for key in ("input_counts_as_presence", "liveness_enabled", "alerts_enabled"):
+        for key in ("input_counts_as_presence", "liveness_enabled", "alerts_enabled", "face_recognition_enabled"):
             new[key] = bool(self.sv[key].get())
         new["workdays"] = [i + 1 for i, v in enumerate(self.s_days) if v.get()]
         for widget, key in ((self.s_prod, "app_productive"), (self.s_unprod, "app_unproductive")):
