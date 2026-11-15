@@ -7,7 +7,7 @@ import os
 import sys
 
 APP = "AjliinButeemj"
-VERSION = "3.2.0"
+VERSION = "3.3.0"
 
 datas = [("assets/face_detection_yunet_2023mar.onnx", "assets")]
 # hub.json (админы компьютерийн нэр + порт, нууц зүйлгүй; --admin-setup үүсгэнэ) байвал програмд багцална

@@ -19,8 +19,8 @@ from .uiutil import (BG, BORDER, FG, FONT, GAP, GREEN, MUTED, PENDING_BG, RED, S
 REFRESH_MS = 30000  # бүтэн шинэчлэлт (өдрийн дүн, 7 хоног)
 LIVE_MS = 2000  # одоогийн төлөв, апп — ажилтан апп солиход самбарт ≤ 5 сек-д харагдана
 ROW_H = 44
-COLS = [("Ажилтан", 200), ("Одоо", 175), ("Одоогийн апп", 150), ("Ажилласан", 85), ("Гарсан", 75),
-        ("Ирсэн – Явсан", 105), ("Хоцорсон", 80), ("Бүтээмж", 75), ("Өдрийн явц", 240)]
+COLS = [("Ажилтан", 200), ("Одоо", 175), ("Одоогийн апп", 180), ("Ажилласан", 85), ("Гарсан", 75),
+        ("Ирсэн – Явсан", 105), ("Хоцорсон", 80), ("Бүтээмж", 75), ("Өдрийн явц", 210)]
 ORANGE = "#bc4c00"
 LUNCH = "#d8dee4"
 CAT_COLOR = {"productive": "#1a7f37", "unproductive": "#cf222e", "neutral": "#8c959f"}
@@ -303,7 +303,7 @@ class Dashboard(tk.Toplevel):
                                fill=ORANGE if since.startswith("⚠") else MUTED, tags=tag)
             x += COLS[1][1]
             app = ((p["live"] or {}).get("current_app") or "—") if st != "offline" else "—"
-            cv.create_text(x, y + ROW_H / 2, anchor="w", text=app[:20], font=(FONT, 11), fill=FG, tags=tag)
+            cv.create_text(x, y + ROW_H / 2, anchor="w", text=app[:23], font=(FONT, 11), fill=FG, tags=tag)
             x += COLS[2][1]
             cv.create_text(x, y + 15, anchor="w", text=fmt_dur(d["work_seconds"]), font=(FONT, 12, "bold"),
                            fill=FG, tags=tag)
