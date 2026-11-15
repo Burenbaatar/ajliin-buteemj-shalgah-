@@ -218,7 +218,7 @@ class Tracker:
             elif idle is not None:
                 evidence = idle <= float(cfg["no_camera_idle_timeout_sec"])
             else:
-                evidence = True  # шалгах арга алга: ажиллаж байна гэж үзнэ
+                evidence = False  # No camera or input signal: presence cannot be confirmed.
 
             app_key = app or activity.UNKNOWN_APP
             grace = float(cfg["away_grace_sec"])
