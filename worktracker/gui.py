@@ -400,20 +400,61 @@ class MainWindow:
         self.refresh()
 
     def ask_pause_reason(self) -> str | None:
-        """Түр зогсоох шалтгаан (заавал). Цуцалбал None — зогсоохгүй."""
-        if self.root.state() == "withdrawn":  # tray-аас дарсан
+        """Шалтгааныг урд гарсан цонхонд авна. Цуцалбал түр зогсоохгүй."""
+        if self.root.state() in ("withdrawn", "iconic"):
             self.root.deiconify()
-            self.root.lift()
+        self.root.lift()
+        try:
+            self.root.focus_force()
+        except tk.TclError:
+            pass
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Түр зогсоох")
+        dialog.configure(bg=BG, padx=20, pady=16)
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+
         prompt = PAUSE_PROMPT if self.app.api else "Яагаад түр зогсоож байна вэ?"
-        while True:
-            reason = simpledialog.askstring("Түр зогсоох", prompt, parent=self.root)
-            if reason is None:
-                return None
-            reason = " ".join(reason.split())[:200]
-            if reason:
-                return reason
-            messagebox.showwarning(APP_TITLE, "Шалтгаанаа бичнэ үү (жишээ нь: эмнэлэг, банк, хурал).",
-                                   parent=self.root)
+        tk.Label(dialog, text=prompt, font=(FONT, 11), fg=FG, bg=BG, wraplength=420,
+                 justify="left").pack(anchor="w")
+        if not self.app.api:
+            tk.Label(dialog, text="Админд холболт тохируулаагүй байна; шалтгаан админд очихгүй.",
+                     font=(FONT, 9), fg=MUTED, bg=BG, wraplength=420, justify="left").pack(
+                         anchor="w", pady=(6, 0))
+
+        reason_entry = tk.Entry(dialog, font=(FONT, 11), width=48)
+        reason_entry.pack(fill="x", pady=(12, 8))
+        error_label = tk.Label(dialog, text="", font=(FONT, 9), fg=RED, bg=BG, anchor="w")
+        error_label.pack(fill="x")
+        result: dict[str, str | None] = {"reason": None}
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        def submit() -> None:
+            reason = " ".join(reason_entry.get().split())[:200]
+            if not reason:
+                error_label.config(text="Шалтгаанаа бичнэ үү (жишээ нь: эмнэлэг, банк, хурал).")
+                reason_entry.focus_set()
+                return
+            result["reason"] = reason
+            dialog.destroy()
+
+        buttons = tk.Frame(dialog, bg=BG)
+        buttons.pack(fill="x", pady=(10, 0))
+        button(buttons, "Зогсоох", submit, primary=True).pack(side="right", padx=(8, 0))
+        button(buttons, "Болих", cancel).pack(side="right")
+        dialog.bind("<Return>", lambda _event: submit())
+        dialog.bind("<Escape>", lambda _event: cancel())
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        dialog.grab_set()
+        dialog.lift()
+        dialog.attributes("-topmost", True)
+        dialog.after(350, lambda: dialog.attributes("-topmost", False))
+        dialog.after_idle(reason_entry.focus_set)
+        self.root.wait_window(dialog)
+        return result["reason"]
 
     def check_pauses(self) -> None:
         """Өнөөдрийн түр зогсолтуудыг админ зөвшөөрсөн эсэхийг серверээс асууна."""
