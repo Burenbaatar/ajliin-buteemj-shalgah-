@@ -401,6 +401,7 @@ class MainWindow:
 
     def ask_pause_reason(self) -> str | None:
         """Шалтгааныг урд гарсан цонхонд авна. Цуцалбал түр зогсоохгүй."""
+        # Tray горимоос дарсан ч ажилтан шалтгаан бичих цонхыг шууд харахаар урд гаргана.
         if self.root.state() in ("withdrawn", "iconic"):
             self.root.deiconify()
         self.root.lift()
@@ -438,6 +439,7 @@ class MainWindow:
                 error_label.config(text="Шалтгаанаа бичнэ үү (жишээ нь: эмнэлэг, банк, хурал).")
                 reason_entry.focus_set()
                 return
+            # Шалтгаан хоосон биш үед л түр зогсоож, админд илгээх үр дүн болгон буцаана.
             result["reason"] = reason
             dialog.destroy()
 
