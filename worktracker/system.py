@@ -3,9 +3,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
-import plistlib
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -41,8 +39,7 @@ def ensure_single_instance(wait_sec: float = 0.0) -> bool:
     while True:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            if sys.platform == "win32":
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             s.bind(("127.0.0.1", _SINGLE_INSTANCE_PORT))
             s.listen(4)
         except OSError:
@@ -96,53 +93,32 @@ def release_single_instance() -> None:
         _instance_socket = None
 
 
-def _mac_app_bundle() -> Path | None:
-    exe = Path(sys.executable).resolve()
-    return exe.parents[2] if exe.parent.name == "MacOS" else None
-
-
 def set_autostart(enabled: bool) -> None:
-    """Компьютер асахад (хэрэглэгч нэвтрэхэд) автоматаар эхлүүлнэ. Зөвхөн .exe/.app үед."""
+    """Компьютер асахад (хэрэглэгч нэвтрэхэд) автоматаар эхлүүлнэ (Windows Run key). Зөвхөн .exe үед."""
     if not is_frozen():
         return
     try:
-        if sys.platform == "win32":
-            import winreg
+        import winreg
 
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE
-            )
-            with key:
-                if enabled:
-                    winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, f'"{sys.executable}" --background')
-                else:
-                    try:
-                        winreg.DeleteValue(key, APP_NAME)
-                    except FileNotFoundError:
-                        pass
-        elif sys.platform == "darwin":
-            plist = Path.home() / "Library" / "LaunchAgents" / f"mn.{APP_NAME.lower()}.plist"
-            bundle = _mac_app_bundle()
-            if enabled and bundle:
-                plist.parent.mkdir(parents=True, exist_ok=True)
-                data = {
-                    "Label": f"mn.{APP_NAME.lower()}",
-                    "ProgramArguments": ["/usr/bin/open", "-a", str(bundle), "--args", "--background"],
-                    "RunAtLoad": True,
-                }
-                plist.write_bytes(plistlib.dumps(data))
-            elif not enabled and plist.exists():
-                subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
-                plist.unlink()
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE
+        )
+        with key:
+            if enabled:
+                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, f'"{sys.executable}" --background')
+            else:
+                try:
+                    winreg.DeleteValue(key, APP_NAME)
+                except FileNotFoundError:
+                    pass
     except Exception:  # noqa: BLE001
         log.exception("Автоматаар эхлэх тохиргоо хийж чадсангүй")
 
 
 def enable_hidpi() -> None:
-    if sys.platform == "win32":
-        try:
-            import ctypes
+    try:
+        import ctypes
 
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
-        except Exception:  # noqa: BLE001
-            pass
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:  # noqa: BLE001
+        pass

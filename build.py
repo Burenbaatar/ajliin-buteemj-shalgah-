@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
-"""Програмыг бүтээх скрипт (Windows болон macOS аль алинд ажиллана).
+"""Програмыг бүтээх скрипт (зөвхөн Windows).
 
     python build.py              # бүтээнэ
     python build.py --clean      # build/ dist/ .venv-г устгаад цэвэр бүтээнэ
     python build.py --selftest   # бүтээсний дараа --selftest ажиллуулж шалгана
     python build.py --publish    # бүтээгээд админы хавтасны update/ руу байршуулна → ажилтнууд өөрөө шинэчлэгдэнэ
 
-Үр дүн:
-    Windows -> dist/AjliinButeemj.exe
-    macOS   -> dist/AjliinButeemj-mac/AjliinButeemj.app, dist/AjliinButeemj-mac.zip
-
-Анхаар: .exe-г зөвхөн Windows дээр, .app-г зөвхөн Mac дээр бүтээнэ.
+Үр дүн: dist/AjliinButeemj.exe
 """
 from __future__ import annotations
 
@@ -29,8 +25,6 @@ APP = "AjliinButeemj"
 ROOT = Path(__file__).resolve().parent
 VENV = ROOT / ".venv"
 DIST = ROOT / "dist"
-IS_WIN = sys.platform == "win32"
-IS_MAC = sys.platform == "darwin"
 
 
 def log(msg: str) -> None:
@@ -44,7 +38,7 @@ def run(*cmd: str | Path) -> None:
 
 
 def venv_python() -> Path:
-    return VENV / ("Scripts/python.exe" if IS_WIN else "bin/python")
+    return VENV / "Scripts" / "python.exe"
 
 
 def ensure_venv() -> Path:
@@ -74,33 +68,12 @@ def package_windows() -> Path:
     return exe
 
 
-def package_mac() -> Path:
-    app = DIST / f"{APP}.app"
-    if not app.exists():
-        sys.exit(f"АЛДАА: {app} үүссэнгүй")
-    pkg = DIST / f"{APP}-mac"
-    zip_path = DIST / f"{APP}-mac.zip"
-    shutil.rmtree(pkg, ignore_errors=True)
-    zip_path.unlink(missing_ok=True)
-    pkg.mkdir(parents=True)
-    # ditto нь .app доторх symlink, гарын үсэг, extended attribute-г зөв хадгална
-    run("ditto", app, pkg / app.name)
-    copy_config(pkg)
-    run("ditto", "-c", "-k", "--keepParent", pkg, zip_path)
-    return zip_path
-
-
 def selftest(target: Path) -> None:
     log("Self-test ажиллуулж байна")
-    if IS_MAC:
-        binary = DIST / f"{APP}.app" / "Contents" / "MacOS" / APP
-    else:
-        binary = target
-    rc = subprocess.run([str(binary), "--selftest"], cwd=ROOT).returncode
-    if IS_WIN:
-        app_log = Path(os.environ.get("APPDATA", "")) / APP / "app.log"
-        if app_log.exists():
-            print(app_log.read_text(encoding="utf-8", errors="replace"))
+    rc = subprocess.run([str(target), "--selftest"], cwd=ROOT).returncode
+    app_log = Path(os.environ.get("APPDATA", "")) / APP / "app.log"
+    if app_log.exists():
+        print(app_log.read_text(encoding="utf-8", errors="replace"))
     if rc != 0:
         sys.exit(f"АЛДАА: self-test амжилтгүй (код {rc})")
     log("Self-test амжилттай")
@@ -115,8 +88,6 @@ def app_version() -> str:
 def share_local_path() -> Path | None:
     """--admin-setup үүсгэсэн хавтас (энэ компьютер дээр)."""
     candidates = [Path(os.environ.get("APPDATA", "")) / APP / "share.json", ROOT / "data" / "share.json"]
-    if IS_MAC:
-        candidates.insert(0, Path.home() / "Library" / "Application Support" / APP / "share.json")
     for f in candidates:
         try:
             local = json.loads(f.read_text(encoding="utf-8-sig")).get("local_path")
@@ -167,15 +138,14 @@ def publish(target: Path) -> None:
     _publish_to(local / "update", target, meta)
     if LEGACY_SHARE.is_dir():
         _publish_to(LEGACY_SHARE / "update", target, meta)
-        if IS_WIN:
-            protect_update_dir(LEGACY_SHARE / "update")
+        protect_update_dir(LEGACY_SHARE / "update")
     print(f"   Хувилбар {meta['version']} — ажилтнуудын програм 30 минутын дотор (эсвэл дараагийн удаа асахад) "
           "өөрөө шинэчлэгдэнэ.")
 
 
 def ensure_dist_writable() -> None:
     exe = DIST / f"{APP}.exe"
-    if IS_WIN and exe.exists():
+    if exe.exists():
         try:
             with open(exe, "r+b"):
                 pass
@@ -192,8 +162,8 @@ def main() -> None:
                         help="бүтээсний дараа админы хавтасны update/ руу байршуулж, ажилтнуудыг автоматаар шинэчлэх")
     args = parser.parse_args()
 
-    if not (IS_WIN or IS_MAC):
-        sys.exit("АЛДАА: зөвхөн Windows эсвэл macOS дээр бүтээнэ")
+    if sys.platform != "win32":
+        sys.exit("АЛДАА: зөвхөн Windows дээр бүтээнэ")
     if sys.version_info < (3, 9):
         sys.exit("АЛДАА: Python 3.9 эсвэл түүнээс шинэ хувилбар хэрэгтэй")
 
@@ -216,7 +186,7 @@ def main() -> None:
     log(f"PyInstaller-ээр бүтээж байна (хувилбар {app_version()})")
     run(py, "-m", "PyInstaller", ROOT / f"{APP}.spec", "--noconfirm")
 
-    target = package_windows() if IS_WIN else package_mac()
+    target = package_windows()
     if args.selftest:
         selftest(target)
     if args.publish:

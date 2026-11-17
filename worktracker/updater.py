@@ -4,8 +4,7 @@
 админд өөрийн хавтаснаас; 3.1.x хувилбарууд хуучин хуваалцсан хавтаснаас (шилжилтийн үед).
     Админ `python build.py --publish` ажиллуулахад тэнд байршина. Тэр хавтсыг ажилтнууд зөвхөн уншина.
 
-- Windows: ажиллаж буй .exe-г .old.exe болгож нэрлээд (Windows үүнийг зөвшөөрдөг) шинээр сольно.
-- macOS:   шинэ .app-г задлаад хуучныг .old болгож сольно.
+Ажиллаж буй .exe-г .old.exe болгож нэрлээд (Windows үүнийг зөвшөөрдөг) шинээр сольно.
 Татсан файлыг version.json дахь SHA-256-аар шалгана.
 """
 from __future__ import annotations
@@ -18,7 +17,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from . import __version__
@@ -34,16 +32,12 @@ def version_tuple(v: str) -> tuple[int, ...]:
     return tuple(int(x) for x in re.findall(r"\d+", v)[:3]) or (0,)
 
 
-def asset_name() -> str | None:
-    if sys.platform == "win32":
-        return "AjliinButeemj.exe"
-    if sys.platform == "darwin":
-        return "AjliinButeemj-mac.zip"
-    return None
+def asset_name() -> str:
+    return "AjliinButeemj.exe"
 
 
 def supported() -> bool:
-    return is_frozen() and asset_name() is not None
+    return is_frozen()
 
 
 def check_share(share, current: str = __version__) -> dict | None:
@@ -111,60 +105,30 @@ def download(info: dict, progress=None, dest_dir: Path | None = None) -> Path:
     return final
 
 
-def _mac_bundle() -> Path | None:
-    exe = Path(sys.executable).resolve()
-    return exe.parents[2] if exe.parent.name == "MacOS" else None
-
-
 def apply(path: Path, exe: Path | None = None) -> None:
     """Шинэ хувилбарыг байрлуулж, дахин эхлүүлнэ. Дуудсаны дараа програм хаагдах ёстой."""
-    if sys.platform == "win32":
-        exe = exe or Path(sys.executable)
-        old = exe.with_name(exe.stem + ".old.exe")
-        old.unlink(missing_ok=True)
-        exe.rename(old)
-        try:
-            shutil.move(str(path), str(exe))
-        except OSError:
-            old.rename(exe)  # буцааж сэргээнэ
-            raise
-        flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-        subprocess.Popen([str(exe), "--updated"], creationflags=flags, close_fds=True)
-    elif sys.platform == "darwin":
-        bundle = exe or _mac_bundle()
-        if bundle is None:
-            raise RuntimeError(".app олдсонгүй")
-        tmp = Path(tempfile.mkdtemp(dir=data_dir()))
-        subprocess.run(["/usr/bin/ditto", "-x", "-k", str(path), str(tmp)], check=True)
-        new_app = next((p for p in tmp.rglob("*.app") if p.name == bundle.name), None) or next(tmp.rglob("*.app"))
-        backup = bundle.with_name(bundle.name + ".old")
-        shutil.rmtree(backup, ignore_errors=True)
-        bundle.rename(backup)
-        try:
-            shutil.move(str(new_app), str(bundle))
-        except OSError:
-            backup.rename(bundle)
-            raise
-        subprocess.run(["/usr/bin/xattr", "-dr", "com.apple.quarantine", str(bundle)], capture_output=True)
-        shutil.rmtree(tmp, ignore_errors=True)
-        subprocess.Popen(["/usr/bin/open", "-n", str(bundle), "--args", "--updated"])
-    else:
-        raise RuntimeError("Энэ системд автомат шинэчлэл дэмжигдэхгүй")
+    exe = exe or Path(sys.executable)
+    old = exe.with_name(exe.stem + ".old.exe")
+    old.unlink(missing_ok=True)
+    exe.rename(old)
+    try:
+        shutil.move(str(path), str(exe))
+    except OSError:
+        old.rename(exe)  # буцааж сэргээнэ
+        raise
+    flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    subprocess.Popen([str(exe), "--updated"], creationflags=flags, close_fds=True)
     if path.exists():
         path.unlink(missing_ok=True)
 
 
 def cleanup() -> None:
-    """Өмнөх шинэчлэлийн үлдэгдлийг цэвэрлэнэ (.old.exe / .app.old)."""
+    """Өмнөх шинэчлэлийн үлдэгдлийг цэвэрлэнэ (.old.exe)."""
     if not is_frozen():
         return
     try:
-        if sys.platform == "win32":
-            exe = Path(sys.executable)
-            exe.with_name(exe.stem + ".old.exe").unlink(missing_ok=True)
-        elif sys.platform == "darwin" and _mac_bundle():
-            b = _mac_bundle()
-            shutil.rmtree(b.with_name(b.name + ".old"), ignore_errors=True)
+        exe = Path(sys.executable)
+        exe.with_name(exe.stem + ".old.exe").unlink(missing_ok=True)
         shutil.rmtree(data_dir() / "update", ignore_errors=True)
     except OSError as exc:
         log.info("Шинэчлэлийн үлдэгдэл цэвэрлэж чадсангүй: %s", exc)

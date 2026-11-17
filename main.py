@@ -100,7 +100,7 @@ def main() -> int:
     p.add_argument("--selftest", action="store_true", help="камер нээхгүйгээр бүх модулийг шалгах")
     p.add_argument("--updated", action="store_true", help=argparse.SUPPRESS)  # шинэчлэлийн дараа эхлэх
     p.add_argument("--version", action="version", version=__version__)
-    args, _ = p.parse_known_args()  # macOS .app-д нэмэлт аргумент ирж болно
+    args, _ = p.parse_known_args()  # танихгүй аргументыг үл тооно
 
     log_path = setup_logging()
 

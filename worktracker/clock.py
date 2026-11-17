@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone, tzinfo
@@ -51,12 +50,7 @@ def zone(name: str | None = None) -> tzinfo:
 
 def _make_since_boot():
     """Компьютер асаснаас хойших секунд, УНТСАН хугацааг оруулаад. Системийн цаг өөрчлөхөд нөлөөлөхгүй."""
-    if sys.platform == "win32":
-        return time.monotonic  # QueryPerformanceCounter / GetTickCount64 — хоёулаа унтсан хугацааг оруулдаг
-    clock_id = getattr(time, "CLOCK_BOOTTIME" if sys.platform.startswith("linux") else "CLOCK_MONOTONIC", None)
-    if clock_id is not None:  # macOS CLOCK_MONOTONIC унтах үед ч тоолдог (time.monotonic тоолдоггүй)
-        return lambda: time.clock_gettime(clock_id)
-    return time.monotonic
+    return time.monotonic  # QueryPerformanceCounter / GetTickCount64 — хоёулаа унтсан хугацааг оруулдаг
 
 
 class Clock:

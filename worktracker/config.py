@@ -1,9 +1,8 @@
-"""Тохиргоо болон файлын замууд (Windows / macOS / Linux)."""
+"""Тохиргоо болон файлын замууд (Windows)."""
 from __future__ import annotations
 
 import copy
 import json
-import logging
 import os
 import sys
 from pathlib import Path
@@ -29,11 +28,11 @@ DEFAULTS: dict = {
     "report_time": "18:00",
     # Тайланд үүнээс урт "гарсан" хугацааг жагсааж харуулна (минут)
     "min_away_period_min": 1,
-    # Компьютер асахад автоматаар эхлэх (зөвхөн .exe / .app хувилбарт)
+    # Компьютер асахад автоматаар эхлэх (зөвхөн .exe хувилбарт)
     "autostart": True,
     # Цонхыг үргэлж бусад цонхны дээр харуулах
     "always_on_top": False,
-    # Автоматаар шинэчлэх (.exe / .app): админы хавтасны update/ хавтаснаас (build.py --publish).
+    # Автоматаар шинэчлэх (.exe): админы хавтасны update/ хавтаснаас (build.py --publish).
     "auto_update": True,
     "email": {
         "enabled": False,
@@ -63,18 +62,14 @@ COMPANY_KEYS = ("away_grace_sec", "input_counts_as_presence", "min_away_period_m
 
 
 def is_frozen() -> bool:
-    """PyInstaller-ээр багцлагдсан (.exe / .app) эсэх."""
+    """PyInstaller-ээр багцлагдсан (.exe) эсэх."""
     return bool(getattr(sys, "frozen", False))
 
 
 def app_dir() -> Path:
-    """Програмын (.exe, .app эсвэл main.py) байгаа хавтас."""
+    """Програмын (.exe эсвэл main.py) байгаа хавтас."""
     if is_frozen():
-        exe = Path(sys.executable).resolve()
-        # macOS: X.app/Contents/MacOS/X -> X.app-ийн хажуугийн хавтас
-        if sys.platform == "darwin" and exe.parent.name == "MacOS":
-            return exe.parents[3]
-        return exe.parent
+        return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
 
 
@@ -85,13 +80,8 @@ def resource_path(*parts: str) -> Path:
 
 
 def installed_data_dir() -> Path:
-    """.exe / .app хувилбарын өгөгдлийн хавтас (%APPDATA%\\AjliinButeemj г.м.)."""
-    if sys.platform == "win32":
-        d = Path(os.environ.get("APPDATA", Path.home())) / APP_NAME
-    elif sys.platform == "darwin":
-        d = Path.home() / "Library" / "Application Support" / APP_NAME
-    else:
-        d = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / APP_NAME
+    """.exe хувилбарын өгөгдлийн хавтас (%APPDATA%\\AjliinButeemj)."""
+    d = Path(os.environ.get("APPDATA", Path.home())) / APP_NAME
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -269,18 +259,12 @@ class Config(dict):
 def load_config() -> Config:
     """Тохиргоог 3 давхаргаар уншина:  анхны утга < ажилтны файл < менежерийн файл.
 
-    Менежерийн config.json:  .exe/.app-ийн хажууд тавина. Анх олдохдоо өгөгдлийн
-    хавтаст managed.json нэрээр хуулагдана — дараа нь .exe-г зөөсөн, эсвэл macOS
-    App Translocation хийсэн ч тохиргоо алдагдахгүй.
+    Менежерийн config.json:  .exe-ийн хажууд тавина. Анх олдохдоо өгөгдлийн
+    хавтаст managed.json нэрээр хуулагдана — дараа нь .exe-г зөөсөн ч тохиргоо алдагдахгүй.
     Ажилтны нэр (USER_KEYS) нь ажилтны файлаас авагдана.
     """
     beside = app_dir() / "config.json"
     managed_copy = data_dir() / "managed.json"
-    if sys.platform == "darwin" and "/AppTranslocation/" in str(beside):
-        logging.getLogger(__name__).warning(
-            "macOS App Translocation: хажуудах config.json харагдахгүй. "
-            "Шийдэл: xattr -dr com.apple.quarantine <хавтас>"
-        )
     user_path = data_dir() / "config.json"
 
     manager_path: Path | None = None

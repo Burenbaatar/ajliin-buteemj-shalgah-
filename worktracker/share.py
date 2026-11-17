@@ -23,7 +23,6 @@ import re
 import shutil
 import socket
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -221,12 +220,7 @@ def resolve_root(info: dict) -> Path:
     local = info.get("local_path")
     if local and Path(local).is_dir():
         return Path(local)
-    share = str(info.get("share") or "")
-    if sys.platform == "darwin" and share.startswith("\\\\"):
-        from .config import data_dir
-
-        return data_dir() / "share"  # mount_smbfs-ээр энд холбогдоно
-    return Path(share)
+    return Path(str(info.get("share") or ""))
 
 
 _connect_lock = threading.Lock()
@@ -244,22 +238,12 @@ def ensure_connected(info: dict, root: Path) -> None:
             return
         _last_connect = time.monotonic()
         try:
-            if sys.platform == "win32":
-                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                r = subprocess.run(["net", "use", share, str(pw or ""), f"/user:{user}", "/persistent:no"],
-                                   capture_output=True, timeout=30, creationflags=flags)
-                if r.returncode:
-                    log.warning("Хавтсанд холбогдож чадсангүй: %s",
-                                (r.stderr or r.stdout).decode("utf-8", "replace").strip()[:200])
-            elif sys.platform == "darwin":
-                from urllib.parse import quote
-
-                host, _, name = share.lstrip("\\").partition("\\")
-                account = str(user).split("\\")[-1]
-                root.mkdir(parents=True, exist_ok=True)
-                if not os.path.ismount(root):
-                    url = f"//{quote(account)}:{quote(str(pw or ''))}@{host}/{quote(name)}"
-                    subprocess.run(["mount_smbfs", "-N", url, str(root)], capture_output=True, timeout=30)
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            r = subprocess.run(["net", "use", share, str(pw or ""), f"/user:{user}", "/persistent:no"],
+                               capture_output=True, timeout=30, creationflags=flags)
+            if r.returncode:
+                log.warning("Хавтсанд холбогдож чадсангүй: %s",
+                            (r.stderr or r.stdout).decode("utf-8", "replace").strip()[:200])
         except (OSError, subprocess.SubprocessError) as exc:
             log.warning("Хавтсанд холбогдож чадсангүй: %s", exc)
 

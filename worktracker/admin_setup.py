@@ -33,8 +33,8 @@ log = logging.getLogger(__name__)
 
 SHARE_NAME = "AjliinButeemj"
 ACCOUNT = "ajliinbuteemj"
-DEFAULT_FOLDER = Path(r"C:\AjliinButeemjData") if sys.platform == "win32" else Path.home() / "AjliinButeemjData"
-LEGACY_FOLDER = Path(r"C:\AjliinButeemjShare") if sys.platform == "win32" else Path.home() / "AjliinButeemjShare"
+DEFAULT_FOLDER = Path(r"C:\AjliinButeemjData")
+LEGACY_FOLDER = Path(r"C:\AjliinButeemjShare")
 FILE_SHARING_GROUP = "@FirewallAPI.dll,-28502"  # "File and Printer Sharing" — хэлнээс үл хамаарах нэр
 FIREWALL_RULE = "AjliinButeemj server"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -68,8 +68,6 @@ def _account_password() -> str:
 
 
 def is_elevated() -> bool:
-    if sys.platform != "win32":
-        return os.geteuid() == 0 if hasattr(os, "geteuid") else False
     try:
         import ctypes
 
@@ -210,8 +208,7 @@ def run_admin_setup() -> int:
     prepare_folders(DEFAULT_FOLDER, LEGACY_FOLDER)
     old = load_share() or {}
     account_pw = old.get("password") or _account_password()  # хуучин програмууд хуучин нууц үгээ хэрэглэсээр
-    errors = _elevated_system_setup(DEFAULT_FOLDER, LEGACY_FOLDER, account_pw, HUB_PORT) \
-        if sys.platform == "win32" else ["Firewall-д TCP 47815-ыг гараар нээнэ үү"]
+    errors = _elevated_system_setup(DEFAULT_FOLDER, LEGACY_FOLDER, account_pw, HUB_PORT)
 
     save_share({"local_path": str(DEFAULT_FOLDER), "share": f"\\\\{host}\\{SHARE_NAME}",
                 "user": f"{host}\\{ACCOUNT}", "password": account_pw})

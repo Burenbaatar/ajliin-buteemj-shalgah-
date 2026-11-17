@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import queue
-import sys
 import threading
 import tkinter as tk
 
-FONT = "Segoe UI" if sys.platform == "win32" else "Helvetica"
+FONT = "Segoe UI"
 BG = "#ffffff"
 SURFACE = "#f6f8fa"
 FG = "#1f2328"
@@ -78,29 +77,20 @@ def clear(container: tk.Misc) -> None:
 
 
 def button(parent, text, command, primary=False, danger=False, **kw) -> tk.Button:
-    # macOS дээр tk.Button-ий дэвсгэр өнгө өөрчлөгддөггүй тул энгийн товч; Windows дээр өнгөтэй
     opts = {"text": text, "command": command, "padx": 10, "pady": 3, "cursor": "hand2"}
     if danger:
-        if sys.platform == "win32":
-            opts.update(bg=RED, fg="white", activebackground="#a40e26", activeforeground="white", relief="flat")
-        else:
-            opts.update(fg=RED)
-    elif primary and sys.platform == "win32":
+        opts.update(bg=RED, fg="white", activebackground="#a40e26", activeforeground="white", relief="flat")
+    elif primary:
         opts.update(bg=ACCENT, fg="white", activebackground="#0550ae", activeforeground="white", relief="flat")
     opts.update(kw)
     return tk.Button(parent, **opts)
 
 
 def bind_wheel(widget: tk.Widget, target: tk.Canvas) -> None:
-    """Хулганы дугуйгаар canvas гүйлгэх (Windows / macOS / Linux)."""
+    """Хулганы дугуйгаар canvas гүйлгэх."""
 
     def on_wheel(e):
-        if sys.platform == "darwin":
-            target.yview_scroll(-int(e.delta), "units")
-        else:
-            target.yview_scroll(-int(e.delta / 120), "units")
+        target.yview_scroll(-int(e.delta / 120), "units")
 
     widget.bind("<Enter>", lambda _: widget.bind_all("<MouseWheel>", on_wheel))
     widget.bind("<Leave>", lambda _: widget.unbind_all("<MouseWheel>"))
-    widget.bind("<Button-4>", lambda _: target.yview_scroll(-1, "units"))
-    widget.bind("<Button-5>", lambda _: target.yview_scroll(1, "units"))

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 import threading
 import time
 import tkinter as tk
@@ -41,37 +40,32 @@ FACE_CONSENT_TEXT = (
 
 
 class Tray:
-    """Цонх хаахад програм арын горимд үргэлжилнэ.
-    Windows: системийн tray дүрс (pystray).  macOS: Dock дүрс дээр дарж нээнэ, ⌘Q бүрэн хаана."""
+    """Цонх хаахад програм арын горимд үргэлжилнэ — системийн tray дүрс (pystray)."""
 
     COLORS = {"working": (26, 127, 55), "away": (207, 34, 46), "offline": (140, 149, 159), "paused": (154, 103, 0)}
 
     def __init__(self, root: tk.Tk, bg: Bg, on_show, on_quit, on_dashboard=None, on_pause=None, is_paused=None):
         self.icon = None
         self._status = None
-        if sys.platform == "win32":
-            try:
-                import pystray
+        try:
+            import pystray
 
-                items = [pystray.MenuItem("Нээх", lambda: bg.call_soon(on_show), default=True)]
-                if on_pause and is_paused:
-                    items.append(pystray.MenuItem(lambda _: "▶ Үргэлжлүүлэх" if is_paused() else "⏸ Зогсоох",
-                                                  lambda: bg.call_soon(on_pause)))
-                if on_dashboard:
-                    items.append(pystray.MenuItem("Самбар (админ)", lambda: bg.call_soon(on_dashboard)))
-                items.append(pystray.MenuItem("Програмыг хаах", lambda: bg.call_soon(on_quit)))
-                self.icon = pystray.Icon("AjliinButeemj", self._image("offline"), APP_TITLE, pystray.Menu(*items))
-                threading.Thread(target=self.icon.run, name="tray", daemon=True).start()
-            except Exception:  # noqa: BLE001
-                log.exception("Tray дүрс үүсгэж чадсангүй")
-                self.icon = None
-        elif sys.platform == "darwin":
-            root.createcommand("tk::mac::ReopenApplication", on_show)
-            root.createcommand("tk::mac::Quit", lambda: on_quit(confirm=False))
+            items = [pystray.MenuItem("Нээх", lambda: bg.call_soon(on_show), default=True)]
+            if on_pause and is_paused:
+                items.append(pystray.MenuItem(lambda _: "▶ Үргэлжлүүлэх" if is_paused() else "⏸ Зогсоох",
+                                              lambda: bg.call_soon(on_pause)))
+            if on_dashboard:
+                items.append(pystray.MenuItem("Самбар (админ)", lambda: bg.call_soon(on_dashboard)))
+            items.append(pystray.MenuItem("Програмыг хаах", lambda: bg.call_soon(on_quit)))
+            self.icon = pystray.Icon("AjliinButeemj", self._image("offline"), APP_TITLE, pystray.Menu(*items))
+            threading.Thread(target=self.icon.run, name="tray", daemon=True).start()
+        except Exception:  # noqa: BLE001
+            log.exception("Tray дүрс үүсгэж чадсангүй")
+            self.icon = None
 
     @property
     def available(self) -> bool:
-        return self.icon is not None or sys.platform == "darwin"
+        return self.icon is not None
 
     def _image(self, status):
         from PIL import Image, ImageDraw
@@ -306,12 +300,7 @@ class MainWindow:
     def hide(self, quiet: bool = False) -> None:
         """Цонхыг нууна — цаг бүртгэл үргэлжилнэ."""
         if not self._hidden_once and not quiet:
-            if sys.platform == "win32":
-                self.tray.notify("Програм арын горимд ажилласаар байна. Tray дүрс дээр дарж нээнэ.")
-            else:
-                messagebox.showinfo(APP_TITLE, "Цонх нуугдлаа, цаг бүртгэл үргэлжилж байна.\n"
-                                               "Dock дээрх дүрсэн дээр дарж дахин нээнэ. Бүрэн хаах бол ⌘Q.",
-                                    parent=self.root)
+            self.tray.notify("Програм арын горимд ажилласаар байна. Tray дүрс дээр дарж нээнэ.")
         self._hidden_once = True
         self.root.withdraw()
 
@@ -555,7 +544,7 @@ def run_gui(cfg, updated: bool = False, background: bool = False) -> None:
         api = make_client(cfg)
 
     app = App(cfg, api=api, admin=admin)
-    app.start()  # main thread дээр (macOS камерын зөвшөөрөл)
+    app.start()
     state["app"] = app
     main = state["main"] = MainWindow(root, app, bg, tray, admin=admin)
     if background and not first_run:

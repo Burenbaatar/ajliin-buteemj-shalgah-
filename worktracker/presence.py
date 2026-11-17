@@ -13,7 +13,6 @@ import logging
 import math
 import os
 import random
-import sys
 import threading
 import time
 
@@ -294,13 +293,7 @@ class Liveness:
 
 
 def _open_camera(index: int):
-    if sys.platform == "darwin":
-        backend = cv2.CAP_AVFOUNDATION
-    elif sys.platform == "win32":
-        backend = cv2.CAP_DSHOW
-    else:
-        backend = cv2.CAP_ANY
-    cap = cv2.VideoCapture(index, backend)
+    cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)  # DirectShow: Windows дээр камер хурдан нээгддэг
     if not cap.isOpened():
         cap.release()
         return None
@@ -512,8 +505,6 @@ class PresenceMonitor:
             self.last_face_time = now
 
     def start(self) -> None:
-        # macOS дээр камерын зөвшөөрлийн цонх main thread-ээс гарах ёстой тул
-        # анхны нээлтийг энд (main thread) хийнэ.
         self._cap = _open_camera(self.camera_index)
         self.camera_ok = self._cap is not None
         if not self.camera_ok:
