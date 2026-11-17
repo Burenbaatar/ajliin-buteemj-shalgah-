@@ -100,7 +100,9 @@ def _telegram_text(r: dict) -> str:
     lines = [
         f"<b>Өдрийн тайлан — {e(r['employee'])}</b>",
         f"📅 {r['day']}",
-        f"🟢 Ажилласан: <b>{fmt_dur(d['work_seconds'])}</b>",
+        f"🟢 Ажилласан: <b>{fmt_dur(d['work_seconds'])}</b>"
+        + (f" (зөвшөөрсөн зогсолт {fmt_dur(d['approved_pause_seconds'])} орсон)"
+           if d.get("approved_pause_seconds", 0) >= 60 else ""),
         f"🔴 Гарсан: {fmt_dur(d['away_seconds'])}",
         f"🕘 {(d['first_seen'] or '-')[:5]} – {(d['last_seen'] or '-')[:5]}",
         "",
@@ -118,13 +120,15 @@ def is_fully_sent(cfg: dict, storage: Storage, day: str) -> bool:
     return all(storage.get_meta(f"sent:{ch}:{day}") for ch in ("email", "telegram") if cfg[ch].get("enabled"))
 
 
-def send_report(cfg: dict, storage: Storage, day: str, only_unsent: bool = False) -> tuple[bool, str]:
+def send_report(cfg: dict, storage: Storage, day: str, only_unsent: bool = False,
+                pause_status: dict | None = None) -> tuple[bool, str]:
     """Тайлан үүсгэж, идэвхтэй сувгуудаар илгээнэ. (бүгд амжилттай эсэх, мессеж)
 
     only_unsent=True: тухайн өдөр аль хэдийн амжилттай илгээсэн сувгийг алгасна
     (автомат илгээлтэд давхардахгүйн тулд).
+    pause_status: админы түр зогсолтын шийдвэр — зөвшөөрсөн нь ажилласан цагт орно.
     """
-    r = build_report(storage, day, cfg["employee_name"], cfg["min_away_period_min"])
+    r = build_report(storage, day, cfg["employee_name"], cfg["min_away_period_min"], pause_status=pause_status)
     html_path, csv_path = save_report(r)
     if not channels_enabled(cfg):
         return False, f"Илгээх суваг тохируулаагүй. Тайлан хадгалсан: {html_path}"

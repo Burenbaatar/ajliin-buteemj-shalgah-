@@ -309,16 +309,26 @@ class Dashboard(tk.Toplevel):
             if m["absent"]:
                 cv.create_text(x, y + ROW_H / 2, anchor="w", text="Ирээгүй", font=(FONT, 11, "bold"), fill=RED, tags=tag)
             else:
-                cv.create_oval(x, y + 17, x + 9, y + 26, fill=STATUS_COLOR[st], outline="", tags=tag)
-                cv.create_text(x + 15, y + 15, anchor="w", text=dd.STATUS_TEXT[st], font=(FONT, 11, "bold"),
-                               fill=STATUS_COLOR[st], tags=tag)
                 lv = p["live"] or {}
+                # Яг одоо зогссон бол админы шийдвэрээр: хүлээгдэж байна / зөвшөөрсөн → "Түр зогссон",
+                # татгалзсан → "Гарсан"
+                cur = next((x for x in d["pauses"] if x["ongoing"]), None) \
+                    if st != "offline" and lv.get("paused") else None
+                label, color = dd.STATUS_TEXT[st], STATUS_COLOR[st]
+                if cur and cur["status"] != "rejected":
+                    label, color = "Түр зогссон" + (" ✓" if cur["status"] == "approved" else ""), \
+                        PAUSE_COLOR[cur["status"]]
+                cv.create_oval(x, y + 17, x + 9, y + 26, fill=color, outline="", tags=tag)
+                cv.create_text(x + 15, y + 15, anchor="w", text=label, font=(FONT, 11, "bold"), fill=color, tags=tag)
                 if p["camera_state"] in ("static", "blocked"):
                     since = "⚠ " + dd.CAMERA_TEXT[p["camera_state"]]
                 elif st != "offline":
-                    cur = next((x for x in d["pauses"] if x["ongoing"]), None)
-                    paused = (f"⏸ {cur['reason'][:16]} · " if cur and cur["reason"] else "⏸ зогсоосон · ") \
-                        if lv.get("paused") else ""
+                    if cur and cur["status"] == "rejected":
+                        paused = "✗ зогсолт татгалзсан · "
+                    elif lv.get("paused"):
+                        paused = f"⏸ {cur['reason'][:16]} · " if cur and cur["reason"] else "⏸ зогсоосон · "
+                    else:
+                        paused = ""
                     since = paused + dd.ago_text(lv.get("status_since"))
                 else:
                     since = (dd.ago_text(lv.get("last_seen_at")) + " өмнө") if lv.get("last_seen_at") else ""

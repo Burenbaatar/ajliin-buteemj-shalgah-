@@ -19,8 +19,8 @@ from .config import HUB_PORT, check_password, load_admin, save_hub
 from .notify import channels_enabled
 from .report import build_report, save_report
 from .share import PAUSE_TEXT, default_name
-from .tracker import WORKING
-from .uiutil import BG, FG, FONT, GREEN, MUTED, RED, Bg, button, clear, fmt_dur, friendly, set_app_icon
+from .tracker import AWAY, STATUS_TEXT, WORKING
+from .uiutil import ACCENT, BG, FG, FONT, GREEN, MUTED, RED, Bg, button, clear, fmt_dur, friendly, set_app_icon
 
 log = logging.getLogger(__name__)
 TOP_N = 6
@@ -31,7 +31,7 @@ FACE_CHECK_SEC = 600  # админ царай танихыг асаасан эс
 PAUSE_CHECK_SEC = 60  # түр зогсолтыг админ зөвшөөрсөн эсэхийг ийм давтамжтай шалгана
 PAUSE_STATUS_COLOR = {"pending": PAUSED_COLOR, "approved": GREEN, "rejected": RED}
 PAUSE_PROMPT = ("Яагаад түр зогсоож байна вэ?\n\n"
-                "Шалтгаан админд очно. Админ зөвшөөрвөл зогссон хугацаа ажилласан цагт тооцогдоно,\n"
+                "Шалтгаан админд очно. Админ зөвшөөрвөл зогссон хугацаа ажилласан цагт тооцогдоно, "
                 "татгалзвал «Ажлаас гарсан» хэвээр үлдэнэ.")
 FACE_CONSENT_TEXT = (
     "Админ царай танихыг асаасан байна — таны компьютер дээр өөр хүн сууж ажиллаж байгаа эсэхийг шалгана.\n\n"
@@ -183,8 +183,10 @@ class MainWindow:
         # --- товчнууд
         btns = tk.Frame(root, bg=BG, padx=16, pady=8)
         btns.pack(fill="x")
+        self.dash_btn = None
         if admin and app.api:
-            button(btns, "Самбар", self.open_dashboard, primary=True).pack(side="left", padx=(0, 8))
+            self.dash_btn = button(btns, "Самбар", self.open_dashboard, primary=True)
+            self.dash_btn.pack(side="left", padx=(0, 8))
         self.pause_btn = button(btns, "⏸ Зогсоох", self.toggle_pause)
         self.pause_btn.pack(side="left", padx=(0, 8))
         button(btns, "Тайлан", self.open_report).pack(side="left")
@@ -208,23 +210,43 @@ class MainWindow:
         self._pause_next = time.monotonic() + 8
         self._pause_status: dict[str, str] = {}
         self._pause_text = ("—", MUTED)
-        self._approved_sec = 0.0
+        self._approved_sec = 0.0  # зөвшөөрсөн, дууссан зогсолтууд (үргэлжилж буйг refresh секунд тутам нэмнэ)
+        self._pause_starts: dict[str, str] = {}  # id → эхэлсэн цаг
         self._pause_unsupported = False  # админы програм хуучин (/api/pauses байхгүй)
         self._pause_seen = False
+        self._pause_dialog: tk.Toplevel | None = None  # шалтгаан асуух цонх нээлттэй бол
+        # Админы компьютер: ажилтан шинээр түр зогсоовол tray мэдэгдэл (Telegram тохируулаагүй ч)
+        self._admin_hub = admin and getattr(app.api, "root", None) is not None
+        self._admin_pause_next = time.monotonic() + 10
+        self._admin_pause_seen: set[str] | None = None
         self.refresh()
 
     def refresh(self) -> None:
         s = self.app.tracker.snapshot()
-        color = PAUSED_COLOR if s["paused"] else (GREEN if s["status"] == WORKING else RED)
+        # Одоогийн зогсолтын админы шийдвэр: татгалзвал "Ажлаас гарсан", зөвшөөрвөл ажилласанд тооцогдоно
+        decision = self._pause_status.get(s.get("pause_id") or "", "pending") if s["paused"] else None
+        caption = "Өнөөдөр ажилласан"
+        if decision == "rejected":
+            color, status = RED, f"● {STATUS_TEXT[AWAY]}"
+            caption += " · зогсолтыг админ татгалзсан"
+        elif s["paused"]:
+            color = ACCENT if decision == "approved" else PAUSED_COLOR
+            status = "⏸ Зогсоосон · зөвшөөрсөн" if decision == "approved" else f"⏸ {s['status_text']}"
+            if decision == "pending" and self.app.api:
+                caption += " · админы шийдвэр хүлээгдэж байна"
+        else:
+            color, status = (GREEN if s["status"] == WORKING else RED), f"● {s['status_text']}"
         for w in (self.banner, self.status_lbl, self.timer_lbl, self.timer_caption):
             w.config(bg=color)
-        self.status_lbl.config(text=f"{'⏸' if s['paused'] else '●'} {s['status_text']}")
+        self.status_lbl.config(text=status)
         self.pause_btn.config(text="▶ Үргэлжлүүлэх" if s["paused"] else "⏸ Зогсоох")
-        # Админ зөвшөөрсөн түр зогсолт ажилласан цагт орно (самбартай ижил)
-        self.timer_lbl.config(text=_hms(s["work_seconds"] + self._approved_sec))
-        self.timer_caption.config(text="Өнөөдөр ажилласан" + (
-            f" (зөвшөөрсөн зогсолт {fmt_dur(self._approved_sec)} орсон)" if self._approved_sec >= 60 else ""))
-        self.rows["away"].config(text=fmt_dur(s["away_seconds"]))
+        # Админ зөвшөөрсөн түр зогсолт ажилласан цагт орж, гарсан цагаас хасагдана (самбартай ижил)
+        approved = self._approved_sec + self._open_approved_sec(s)
+        if approved >= 60 and decision != "rejected":
+            caption += f" (зөвшөөрсөн зогсолт {fmt_dur(approved)} орсон)"
+        self.timer_lbl.config(text=_hms(s["work_seconds"] + approved))
+        self.timer_caption.config(text=caption)
+        self.rows["away"].config(text=fmt_dur(max(0.0, s["away_seconds"] - approved)))
         if s["paused"]:
             st = self._pause_status.get(s.get("pause_id") or "", "pending")
             text = f"⏸ {(s.get('pause_reason') or 'шалтгаангүй')[:20]}"
@@ -235,6 +257,9 @@ class MainWindow:
         if not self._pause_unsupported and time.monotonic() >= self._pause_next:
             self._pause_next = time.monotonic() + PAUSE_CHECK_SEC
             self.check_pauses()
+        if self._admin_hub and time.monotonic() >= self._admin_pause_next:
+            self._admin_pause_next = time.monotonic() + PAUSE_CHECK_SEC
+            self.check_admin_pauses()
         self.rows["app"].config(text=(s["app"] or "-")[:32])
         if s["paused"]:
             cam = "Унтраасан (зогсоосон үед)"
@@ -255,7 +280,10 @@ class MainWindow:
         self._last_challenge_prompt = challenge_prompt
         self.rows["cam"].config(text=cam, fg="#bc4c00" if s.get("camera_state") in CAMERA_WARN else FG)
         if self.tray:
-            self.tray.set_status("paused" if s["paused"] else s["status"], s["status_text"])
+            if decision == "rejected":
+                self.tray.set_status(AWAY, f"{STATUS_TEXT[AWAY]} (зогсолт татгалзсан)")
+            else:
+                self.tray.set_status("paused" if s["paused"] else s["status"], s["status_text"])
         if updater.supported() and self.app.cfg.get("auto_update", True) and \
                 time.monotonic() - self._last_update_check > updater.CHECK_EVERY_SEC:
             self._last_update_check = time.monotonic()
@@ -364,7 +392,8 @@ class MainWindow:
     def open_report(self) -> None:
         self.app.tracker.flush_now()
         cfg = self.app.cfg
-        r = build_report(self.app.storage, self.app.tracker.clock.today().isoformat(), cfg["employee_name"], cfg["min_away_period_min"])
+        r = build_report(self.app.storage, self.app.tracker.clock.today().isoformat(), cfg["employee_name"],
+                         cfg["min_away_period_min"], pause_status=self._pause_status if self.app.api else None)
         html_path, _ = save_report(r)
         webbrowser.open(html_path.as_uri())
 
@@ -401,6 +430,11 @@ class MainWindow:
 
     def ask_pause_reason(self) -> str | None:
         """Шалтгааныг урд гарсан цонхонд авна. Цуцалбал түр зогсоохгүй."""
+        if self._pause_dialog is not None and self._pause_dialog.winfo_exists():
+            # Цонх аль хэдийн нээлттэй (tray-аас дахин дарсан) — хоёр дахийг нээхгүй, байгааг нь урд гаргана.
+            self._pause_dialog.lift()
+            self._pause_dialog.focus_force()
+            return None
         # Tray горимоос дарсан ч ажилтан шалтгаан бичих цонхыг шууд харахаар урд гаргана.
         if self.root.state() in ("withdrawn", "iconic"):
             self.root.deiconify()
@@ -450,12 +484,31 @@ class MainWindow:
         dialog.bind("<Return>", lambda _event: submit())
         dialog.bind("<Escape>", lambda _event: cancel())
         dialog.protocol("WM_DELETE_WINDOW", cancel)
+
+        # Үндсэн цонхны голд (хуучин simpledialog шиг); цонх дөнгөж нээгдээд хэмжээгүй бол дэлгэцийн голд
+        dialog.update_idletasks()
+        w, h = dialog.winfo_reqwidth(), dialog.winfo_reqheight()
+        if self.root.winfo_width() > 1:
+            x = self.root.winfo_rootx() + (self.root.winfo_width() - w) // 2
+            y = self.root.winfo_rooty() + (self.root.winfo_height() - h) // 3
+        else:
+            x, y = (dialog.winfo_screenwidth() - w) // 2, (dialog.winfo_screenheight() - h) // 3
+        dialog.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+
+        def drop_topmost() -> None:
+            if dialog.winfo_exists():  # 350 мс-ээс өмнө хаагдсан байж болно
+                dialog.attributes("-topmost", False)
+
+        self._pause_dialog = dialog
         dialog.grab_set()
         dialog.lift()
         dialog.attributes("-topmost", True)
-        dialog.after(350, lambda: dialog.attributes("-topmost", False))
+        dialog.after(350, drop_topmost)
         dialog.after_idle(reason_entry.focus_set)
-        self.root.wait_window(dialog)
+        try:
+            self.root.wait_window(dialog)
+        finally:
+            self._pause_dialog = None
         return result["reason"]
 
     def check_pauses(self) -> None:
@@ -463,6 +516,7 @@ class MainWindow:
         pauses = self.app.storage.get_day(self.app.tracker.clock.today().isoformat())["pauses"]
         if not pauses:
             self._approved_sec = 0.0
+            self._pause_starts = {}
             self._pause_text = ("—", MUTED)
             return
         if not self.app.api:
@@ -484,17 +538,67 @@ class MainWindow:
             for pid, st in statuses.items():
                 if pid in today and st in ("approved", "rejected") and self._pause_status.get(pid) != st:
                     self.tray.notify(f"Түр зогсолт ({today[pid]['start'][:5]}): админ {PAUSE_TEXT[st].lower()}"
-                                     + (" — ажилласан цагт тооцогдоно" if st == "approved" else ""))
+                                     + (" — ажилласан цагт тооцогдоно" if st == "approved"
+                                        else " — «Ажлаас гарсан»-д тооцогдоно"))
         self._pause_seen = True
         self._pause_status = dict(statuses)
+        self._pause_starts = {p["id"]: p["start"] for p in pauses}
+        # Үргэлжилж буй зогсолтыг энд биш, refresh-д секунд тутам нэмнэ (таймер минут тутам үсрэхгүй)
+        tr = self.app.tracker
+        ongoing = tr.pause_id if tr.paused else None
         self._approved_sec = float(sum(_span_sec(p["start"], p["end"]) for p in pauses
-                                       if statuses.get(p["id"]) == "approved"))
+                                       if statuses.get(p["id"]) == "approved" and p["id"] != ongoing))
         last = pauses[-1]
         st = statuses.get(last["id"], "pending")
         more = f" (өнөөдөр {len(pauses)})" if len(pauses) > 1 else ""
         span = f"{last['start'][:5]}–{last['end'][:5]}"
         self._pause_text = ((f"{span} · {PAUSE_TEXT[st]}{more}", PAUSE_STATUS_COLOR[st]) if self.app.api
                             else (f"{span} · {last['reason'][:18]}{more}", FG))
+
+    def _open_approved_sec(self, s: dict) -> float:
+        """Яг одоо үргэлжилж буй, админ зөвшөөрсөн зогсолтын эхэлснээс хойших хугацаа."""
+        pid = s.get("pause_id") or ""
+        start = self._pause_starts.get(pid)
+        if not s["paused"] or not start or self._pause_status.get(pid) != "approved":
+            return 0.0
+        return float(_span_sec(start, self.app.tracker.clock.now().strftime("%H:%M:%S")))
+
+    # ------------------------------------------------------------------ админ: шинэ түр зогсолт
+    def check_admin_pauses(self) -> None:
+        """Админы компьютер: өнөөдөр шийдээгүй түр зогсолтуудыг хавтаснаас уншина (самбар нээгээгүй ч)."""
+        api = self.app.api
+        day = self.app.tracker.clock.today().isoformat()
+
+        def work() -> list[tuple[str, str, str, str]]:
+            decided = {r["user_id"]: r.get("decisions") or {} for r in api.select("wt_pause_decisions")}
+            names = {p["user_id"]: p.get("full_name") or p["user_id"] for p in api.select("wt_profiles")}
+            out = []
+            for r in api.select("wt_daily", "user_id,pauses", day=f"eq.{day}"):
+                uid = r["user_id"]
+                if uid == api.user_id or uid not in names:  # өөрийнхөө зогсолтыг мэдэгдэхгүй
+                    continue
+                for pz in r.get("pauses") or []:
+                    if isinstance(pz, list) and len(pz) == 4 and pz[0] not in decided.get(uid, {}):
+                        out.append((f"{uid}|{pz[0]}", names[uid], str(pz[1]), str(pz[3])))
+            return out
+
+        self.bg.run(work, self._admin_pauses_loaded,
+                    lambda e: log.info("Түр зогсолтуудыг шалгаж чадсангүй: %s", friendly(e)))
+
+    def _admin_pauses_loaded(self, pending: list[tuple[str, str, str, str]]) -> None:
+        seen = self._admin_pause_seen
+        new = pending if seen is None else [x for x in pending if x[0] not in seen]
+        if new and self.tray:
+            if len(new) == 1:
+                _, name, start, reason = new[0]
+                text = f"⏸ {name} {start[:5]}-д түр зогсоолоо: «{reason[:60] or 'шалтгаангүй'}»"
+            else:
+                text = f"⏸ {len(new)} түр зогсолт таны шийдвэрийг хүлээж байна: " + ", ".join(
+                    dict.fromkeys(x[1] for x in new))[:80]
+            self.tray.notify(text + "\nСамбар → «Түр зогсолт» табаас зөвшөөрөх / татгалзана уу")
+        self._admin_pause_seen = (seen or set()) | {x[0] for x in pending}
+        if self.dash_btn is not None:
+            self.dash_btn.config(text=f"Самбар · {len(pending)} хүлээгдэж байна" if pending else "Самбар")
 
     # ------------------------------------------------------------------ царай таних
     def check_face(self) -> None:

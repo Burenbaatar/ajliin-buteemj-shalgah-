@@ -4,7 +4,7 @@
 import os
 
 APP = "AjliinButeemj"
-VERSION = "3.5.0"
+VERSION = "3.6.0"
 
 datas = [("assets/app.ico", "assets"),  # цонх, taskbar-ын icon (uiutil.set_app_icon)
          ("assets/face_detection_yunet_2023mar.onnx", "assets"),

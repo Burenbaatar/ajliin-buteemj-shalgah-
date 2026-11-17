@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import reports_dir
+from .share import PAUSE_TEXT
 from .storage import Storage
 
 
@@ -36,23 +37,40 @@ def merge_periods(periods: list[dict]) -> list[dict]:
     return out
 
 
-def build_report(storage: Storage, day: str, employee: str, min_away_min: float = 1) -> dict:
+def _overlap_sec(p: dict, spans: list[tuple[str, str]]) -> float:
+    return sum(max(0.0, _minutes_between(max(p["start"], a), min(p["end"], b)) * 60) for a, b in spans)
+
+
+def build_report(storage: Storage, day: str, employee: str, min_away_min: float = 1,
+                 pause_status: dict | None = None) -> dict:
+    """pause_status: админы шийдвэр {зогсолтын id: "approved" | "rejected"} (None = админгүй, шийдвэр байхгүй).
+    Зөвшөөрсөн түр зогсолт ажилласан цагт нэмэгдэж, гарсан цагаас хасагдана (самбартай ижил)."""
     d = storage.get_day(day)
-    work, away = d["work_seconds"], d["away_seconds"]
+    pauses = [p for p in d["pauses"] if p["end"] >= p["start"]]
+    status = {p["id"]: (pause_status or {}).get(p["id"], "pending") for p in pauses}
+    approved_spans = [(p["start"], p["end"]) for p in pauses if status[p["id"]] == "approved"]
+    approved = sum(_minutes_between(a, b) * 60 for a, b in approved_spans)
+    work, away = d["work_seconds"] + approved, max(0.0, d["away_seconds"] - approved)
+    d = dict(d, work_seconds=work, away_seconds=away, approved_pause_seconds=approved)
     total_apps = sum(s for _, s in d["apps"]) or 1.0
     away_periods = [
         p
         for p in merge_periods(d["periods"])
         if p["status"] == "away" and _minutes_between(p["start"], p["end"]) >= min_away_min
+        # зөвшөөрсөн зогсолтоор бүрхэгдсэн үе "гарсан" биш
+        and _overlap_sec(p, approved_spans) < _minutes_between(p["start"], p["end"]) * 30
     ]
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
     name = employee or "(нэргүй)"
+
+    def pause_state(p: dict) -> str:
+        return PAUSE_TEXT[status[p["id"]]] if pause_status is not None else ""
 
     # ---------------------------------------------------------------- текст
     lines = [
         f"Өдрийн тайлан — {name}",
         f"Огноо: {day}",
-        f"Ажилласан: {fmt_dur(work)}",
+        f"Ажилласан: {fmt_dur(work)}" + (f" (зөвшөөрсөн зогсолт {fmt_dur(approved)} орсон)" if approved >= 60 else ""),
         f"Ажлаас гарсан: {fmt_dur(away)}",
         f"Анх ирсэн: {d['first_seen'] or '-'}   Сүүлд: {d['last_seen'] or '-'}",
         "",
@@ -64,6 +82,12 @@ def build_report(storage: Storage, day: str, employee: str, min_away_min: float 
         lines += ["", "Ажлаас гарсан үеүд:"]
         for p in away_periods:
             lines.append(f"  {p['start'][:5]} – {p['end'][:5]}  ({fmt_dur(_minutes_between(p['start'], p['end']) * 60)})")
+    if pauses:
+        lines += ["", "Түр зогсолт:"]
+        for p in pauses:
+            state = pause_state(p)
+            lines.append(f"  {p['start'][:5]} – {p['end'][:5]}  ({fmt_dur(_minutes_between(p['start'], p['end']) * 60)})"
+                         f"  «{p['reason'] or 'шалтгаангүй'}»" + (f"  — {state}" if state else ""))
     lines += ["", f"Тайлан гаргасан: {generated}"]
     text = "\n".join(lines)
 
@@ -80,6 +104,16 @@ def build_report(storage: Storage, day: str, employee: str, min_away_min: float 
         f"<td class='num'>{fmt_dur(_minutes_between(p['start'], p['end']) * 60)}</td></tr>"
         for p in away_periods
     ) or '<tr><td colspan="2">Байхгүй</td></tr>'
+    pause_color = {"pending": "#9a6700", "approved": "#1a7f37", "rejected": "#cf222e"}
+    pause_html = "" if not pauses else (
+        "<h2>Түр зогсолт</h2><table><tr><th>Цаг</th><th class='num'>Үргэлжилсэн</th><th>Шалтгаан</th>"
+        "<th>Шийдвэр</th></tr>" + "".join(
+            f"<tr><td>{p['start'][:5]} – {p['end'][:5]}</td>"
+            f"<td class='num'>{fmt_dur(_minutes_between(p['start'], p['end']) * 60)}</td>"
+            f"<td>{e(p['reason'] or 'шалтгаангүй')}</td>"
+            f"<td style='color:{pause_color[status[p['id']]]}'>{e(pause_state(p)) or '—'}</td></tr>"
+            for p in pauses) + "</table>")
+    approved_note = (f"<div class='k'>зөвшөөрсөн зогсолт {fmt_dur(approved)} орсон</div>" if approved >= 60 else "")
 
     html_doc = f"""<!doctype html>
 <html lang="mn"><head><meta charset="utf-8">
@@ -105,7 +139,7 @@ def build_report(storage: Storage, day: str, employee: str, min_away_min: float 
 <h1>Өдрийн тайлан — {e(name)}</h1>
 <div class="sub">{day}</div>
 <div class="cards">
-  <div class="card work"><div class="k">Ажилласан</div><div class="v">{fmt_dur(work)}</div></div>
+  <div class="card work"><div class="k">Ажилласан</div><div class="v">{fmt_dur(work)}</div>{approved_note}</div>
   <div class="card away"><div class="k">Ажлаас гарсан</div><div class="v">{fmt_dur(away)}</div></div>
   <div class="card"><div class="k">Анх ирсэн / Сүүлд</div>
        <div class="v">{(d['first_seen'] or '-')[:5]} / {(d['last_seen'] or '-')[:5]}</div></div>
@@ -114,6 +148,7 @@ def build_report(storage: Storage, day: str, employee: str, min_away_min: float 
 <table><tr><th>Апп</th><th class="num">Хугацаа</th><th></th><th class="num">%</th></tr>{app_rows}</table>
 <h2>Ажлаас гарсан үеүд (≥ {min_away_min:g} мин)</h2>
 <table><tr><th>Цаг</th><th class="num">Үргэлжилсэн</th></tr>{away_rows}</table>
+{pause_html}
 <div class="foot">Тайлан гаргасан: {generated}. Дэлгэцийн зураг, камерын бичлэг хадгалаагүй.</div>
 </body></html>"""
 

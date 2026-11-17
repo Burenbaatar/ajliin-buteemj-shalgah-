@@ -33,6 +33,7 @@ class ReportScheduler:
         self.cfg = cfg
         self.storage = storage
         self.tracker: Tracker | None = None
+        self.pause_status = None  # callback() → админы түр зогсолтын шийдвэр (тайланд зөвшөөрснийг нэмнэ)
         self._busy = threading.Lock()
         self._next_try = 0.0
 
@@ -57,8 +58,9 @@ class ReportScheduler:
             if self.tracker:
                 self.tracker.flush_now()
             all_ok = True
+            statuses = self.pause_status() if self.pause_status else None
             for d in days:
-                ok, msg = send_report(self.cfg, self.storage, d, only_unsent=True)
+                ok, msg = send_report(self.cfg, self.storage, d, only_unsent=True, pause_status=statuses)
                 log.info("Тайлан %s: %s", d, msg)
                 all_ok = all_ok and ok
             self._next_try = 0.0 if all_ok else time.monotonic() + RETRY_SEC
@@ -92,6 +94,7 @@ class App:
             self.cloud = CloudSync(cfg, self.storage, self.tracker, api)
             self.tracker.on_status_change = self.cloud.poke
             self.tracker.on_app_change = self.cloud.poke_live
+            self.scheduler.pause_status = self.pause_statuses
         self.alerts = None
         self.hub = None
         root = getattr(api, "root", None)
@@ -138,9 +141,22 @@ class App:
         self.storage.close()
         log.info("Зогслоо")
 
+    def pause_statuses(self) -> dict | None:
+        """Админы түр зогсолтын шийдвэр {id: "approved" | "rejected"} (арын thread-ээс дуудна).
+        Админгүй бол None; холбогдож чадаагүй бол {} — бүгд "хүлээгдэж байна"."""
+        if self.api is None:
+            return None
+        try:
+            st = self.api.rpc("wt_pause_status")
+        except Exception as exc:  # noqa: BLE001
+            log.info("Түр зогсолтын шийдвэрийг авч чадсангүй: %s", getattr(exc, "friendly", exc))
+            return {}
+        return st if isinstance(st, dict) else {}
+
     def send_today(self) -> tuple[bool, str]:
         self.tracker.flush_now()
-        return send_report(self.cfg, self.storage, self.tracker.clock.today().isoformat())
+        return send_report(self.cfg, self.storage, self.tracker.clock.today().isoformat(),
+                           pause_status=self.pause_statuses())
 
     def run_headless(self) -> None:
         stop = threading.Event()
