@@ -20,7 +20,7 @@ from .notify import channels_enabled
 from .report import build_report, save_report
 from .share import default_name
 from .tracker import WORKING
-from .uiutil import BG, FG, FONT, GREEN, MUTED, RED, Bg, button, clear, fmt_dur, friendly
+from .uiutil import BG, FG, FONT, GREEN, MUTED, RED, Bg, button, clear, fmt_dur, friendly, set_app_icon
 
 log = logging.getLogger(__name__)
 TOP_N = 6
@@ -503,6 +503,7 @@ def run_gui(cfg, updated: bool = False, background: bool = False) -> None:
 
     root = tk.Tk()
     root.withdraw()  # эхний асуултуудын үед хоосон цонх харагдуулахгүй
+    set_app_icon(root)
     root.configure(bg=BG)
     bg = Bg(root)
     state: dict = {}

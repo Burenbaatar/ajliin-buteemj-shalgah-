@@ -28,6 +28,7 @@ from . import APP_TITLE
 from .config import (HUB_FILE, HUB_PORT, SHARE_FILE, app_dir, hash_password, is_frozen, load_admin, load_share,
                      save_admin, save_hub, save_share)
 from .share import write_json
+from .uiutil import set_app_icon
 
 log = logging.getLogger(__name__)
 
@@ -189,6 +190,7 @@ def prepare_folders(data: Path, legacy: Path) -> None:
 def run_admin_setup() -> int:
     root = tk.Tk()
     root.withdraw()
+    set_app_icon(root)
     host = socket.gethostname()
     if not messagebox.askokcancel(
             APP_TITLE,

@@ -6,7 +6,8 @@ import os
 APP = "AjliinButeemj"
 VERSION = "3.4.0"
 
-datas = [("assets/face_detection_yunet_2023mar.onnx", "assets"),
+datas = [("assets/app.ico", "assets"),  # цонх, taskbar-ын icon (uiutil.set_app_icon)
+         ("assets/face_detection_yunet_2023mar.onnx", "assets"),
          ("assets/face_antispoof_minifasnetv2.onnx", "assets"),
          ("assets/face_antispoof_LICENSE.txt", "assets"),
          ("assets/face_recognition_sface_2021dec.onnx", "assets"),
@@ -27,4 +28,5 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz, a.scripts, a.binaries, a.datas, [],
     name=APP, console=False, upx=False, runtime_tmpdir=None,
+    icon="assets/app.ico",  # .exe файлын icon (Explorer, ширээний shortcut)
 )

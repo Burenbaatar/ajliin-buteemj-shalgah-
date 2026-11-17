@@ -20,6 +20,16 @@ PENDING_BG = "#fff8c5"
 STATUS_COLOR = {"working": GREEN, "away": RED, "offline": GRAY}
 
 
+def set_app_icon(root: tk.Tk) -> None:
+    """Бүх цонх (дараа нээгдэх Toplevel-ууд ч) болон taskbar дээр програмын icon (assets/app.ico)."""
+    from .config import resource_path
+
+    try:
+        root.iconbitmap(default=str(resource_path("assets", "app.ico")))
+    except tk.TclError:  # файл олдохгүй бол Tk-ийн анхны icon хэвээр
+        pass
+
+
 def fmt_dur(sec: float) -> str:
     m = int(round((sec or 0) / 60.0))
     h, m = divmod(m, 60)
