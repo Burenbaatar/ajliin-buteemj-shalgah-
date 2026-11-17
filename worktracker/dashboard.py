@@ -13,7 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 from . import APP_TITLE
 from . import dashdata as dd
 from .share import ShareClient
-from .uiutil import (BG, BORDER, FG, FONT, GAP, GREEN, MUTED, PENDING_BG, RED, STATUS_COLOR, SURFACE, Bg,
+from .uiutil import (ACCENT, BG, BORDER, FG, FONT, GAP, GREEN, MUTED, PENDING_BG, RED, STATUS_COLOR, SURFACE, Bg,
                      bind_wheel, button, fmt_dur, fmt_hm, friendly)
 
 REFRESH_MS = 30000  # бүтэн шинэчлэлт (өдрийн дүн, 7 хоног)
@@ -26,6 +26,7 @@ LUNCH = "#d8dee4"
 CAT_COLOR = {"productive": "#1a7f37", "unproductive": "#cf222e", "neutral": "#8c959f"}
 CAT_TEXT = {"productive": "бүтээмжтэй", "unproductive": "бүтээмжгүй", "neutral": "бусад"}
 WEEKDAYS = ["Да", "Мя", "Лх", "Пү", "Ба", "Бя", "Ня"]
+PAUSE_COLOR = {"pending": "#9a6700", "approved": GREEN, "rejected": RED}
 
 
 def _mix(hex_a: str, hex_b: str, t: float) -> str:
@@ -35,9 +36,9 @@ def _mix(hex_a: str, hex_b: str, t: float) -> str:
 
 
 def draw_timeline(cv: tk.Canvas, x: int, y: int, w: int, h: int, periods, rng, settings=None, flags=None,
-                  tags=()) -> None:
-    """Өдрийн явц: ногоон = ажилласан, улаан = гарсан, саарал = програм ажиллаагүй.
-    Цайны цаг цайвар, ажлын цагийн эхлэл/төгсгөл босоо зураас, сэжигтэй үе дээрээ улбар шар."""
+                  tags=(), pauses=None) -> None:
+    """Өдрийн явц: ногоон = ажилласан, улаан = гарсан, саарал = програм ажиллаагүй, цэнхэр = админ зөвшөөрсөн
+    түр зогсолт. Цайны цаг цайвар, ажлын цагийн эхлэл/төгсгөл босоо зураас, сэжигтэй үе дээрээ улбар шар."""
     a, b = rng
     span = max(1, b - a)
     X = lambda sec: x + (min(b, max(a, sec)) - a) / span * w  # noqa: E731
@@ -53,6 +54,10 @@ def draw_timeline(cv: tk.Canvas, x: int, y: int, w: int, h: int, periods, rng, s
         if x1 > x0:
             cv.create_rectangle(x0, y, max(x1, x0 + 1), y + h, fill=GREEN if st == "working" else RED, outline="",
                                 tags=tags)
+    for pz in pauses or []:
+        if pz["status"] == "approved":
+            x0, x1 = X(dd.to_sec(pz["start"])), X(dd.to_sec(pz["end"]))
+            cv.create_rectangle(x0, y, max(x1, x0 + 1), y + h, fill=ACCENT, outline="", tags=tags)
     for _kind, f0, f1 in flags or []:
         x0, x1 = X(dd.to_sec(f0)), X(dd.to_sec(f1))
         if x1 > x0:
@@ -107,6 +112,7 @@ class Dashboard(tk.Toplevel):
         self._build_day_tab()
         self._build_week_tab()
         if self.is_admin:
+            self._build_pauses_tab()
             self._build_users_tab()
             self._build_departments_tab()
             self._build_settings_tab()
@@ -153,6 +159,7 @@ class Dashboard(tk.Toplevel):
         self._render_day()
         self._render_week()
         if self.is_admin:
+            self._render_pauses()
             self._render_users()
             self._render_departments()
         self._schedule()
@@ -232,7 +239,8 @@ class Dashboard(tk.Toplevel):
         bind_wheel(self.day_body, self.day_body)
         legend = tk.Frame(tab, bg=BG)
         legend.pack(fill="x", padx=6, pady=(0, 4))
-        for color, text in ((GREEN, "Ажилласан"), (RED, "Гарсан"), (GAP, "Програм ажиллаагүй"), (LUNCH, "Цайны цаг"),
+        for color, text in ((GREEN, "Ажилласан"), (RED, "Гарсан"), (ACCENT, "Зөвшөөрсөн зогсолт"),
+                            (GAP, "Програм ажиллаагүй"), (LUNCH, "Цайны цаг"),
                             (ORANGE, "Сэжигтэй (зураг / таглагдсан камер / өөр хүн)")):
             tk.Label(legend, text="■", fg=color, bg=BG, font=(FONT, 12)).pack(side="left")
             tk.Label(legend, text=text + "   ", fg=MUTED, bg=BG, font=(FONT, 10)).pack(side="left")
@@ -271,6 +279,9 @@ class Dashboard(tk.Toplevel):
         sus = sum(1 for p in people if p["suspicious"])
         if sus:
             self._kpi("Сэжигтэй", str(sus), ORANGE)
+        waiting = sum(1 for x in data["pause_requests"] if x["status"] == "pending")
+        if waiting:
+            self._kpi("Зогсолт хүлээгдэж байна", str(waiting), PAUSE_COLOR["pending"])
 
         cv = self.day_body
         cv.delete("all")
@@ -305,7 +316,10 @@ class Dashboard(tk.Toplevel):
                 if p["camera_state"] in ("static", "blocked"):
                     since = "⚠ " + dd.CAMERA_TEXT[p["camera_state"]]
                 elif st != "offline":
-                    since = ("⏸ зогсоосон · " if lv.get("paused") else "") + dd.ago_text(lv.get("status_since"))
+                    cur = next((x for x in d["pauses"] if x["ongoing"]), None)
+                    paused = (f"⏸ {cur['reason'][:16]} · " if cur and cur["reason"] else "⏸ зогсоосон · ") \
+                        if lv.get("paused") else ""
+                    since = paused + dd.ago_text(lv.get("status_since"))
                 else:
                     since = (dd.ago_text(lv.get("last_seen_at")) + " өмнө") if lv.get("last_seen_at") else ""
                 cv.create_text(x + 15, y + 31, anchor="w", text=since, font=(FONT, 10),
@@ -340,7 +354,8 @@ class Dashboard(tk.Toplevel):
                            font=(FONT, 11, "bold"), fill=(GREEN if pct >= 60 else ORANGE if pct >= 30 else RED)
                            if pct is not None else MUTED, tags=tag)
             x += COLS[7][1]
-            draw_timeline(cv, x, y + 16, COLS[8][1] - 16, 12, d["periods"], rng, sset, d["flags"], tags=(tag,))
+            draw_timeline(cv, x, y + 16, COLS[8][1] - 16, 12, d["periods"], rng, sset, d["flags"], tags=(tag,),
+                          pauses=d["pauses"])
             cv.tag_bind(tag, "<Button-1>", lambda _e, person=p: DetailWindow(self, person, self.data))
             cv.tag_bind(tag, "<Enter>", lambda _e, t=tag: (cv.itemconfigure(f"{t}&&bgrow", fill=SURFACE),
                                                            cv.configure(cursor="hand2")))
@@ -399,6 +414,73 @@ class Dashboard(tk.Toplevel):
         if not people:
             cv.create_text(16, h + 24, anchor="w", text="Мэдээлэл алга", font=(FONT, 12), fill=MUTED)
         cv.configure(scrollregion=(0, 0, name_w + cell_w * 8 + 20, h * (len(people) + 1) + 10))
+
+    # ================================================================== Түр зогсолт (админ)
+    def _build_pauses_tab(self) -> None:
+        tab = tk.Frame(self.nb, bg=BG)
+        self.pauses_tab = tab
+        self._pause_items: dict[str, dict] = {}
+        self.nb.add(tab, text="Түр зогсолт")
+        tk.Label(tab, text="Ажилтан «Зогсоох» дарахдаа бичсэн шалтгаан (сонгосон өдрөөс өмнөх 7 хоног). "
+                           "Зөвшөөрвөл тэр хугацаа ажилласан цагт тооцогдоно, татгалзвал «Гарсан» хэвээр үлдэнэ.",
+                 bg=BG, fg=MUTED, font=(FONT, 10), justify="left", wraplength=1060).pack(anchor="w", padx=6,
+                                                                                      pady=(8, 4))
+        cols = ("day", "name", "time", "dur", "reason", "status")
+        self.pause_tv = ttk.Treeview(tab, columns=cols, show="headings", selectmode="extended")
+        for c, title, w in zip(cols, ("Огноо", "Ажилтан", "Цаг", "Хугацаа", "Шалтгаан", "Шийдвэр"),
+                               (100, 190, 150, 80, 380, 190)):
+            self.pause_tv.heading(c, text=title)
+            self.pause_tv.column(c, width=w, anchor="w", stretch=c == "reason")
+        for status, color in PAUSE_COLOR.items():
+            self.pause_tv.tag_configure(status, foreground=color)
+        self.pause_tv.tag_configure("pending", background=PENDING_BG)
+        self.pause_tv.pack(fill="both", expand=True, padx=4, pady=4)
+        row = tk.Frame(tab, bg=BG, pady=8)
+        row.pack(fill="x", padx=4)
+        button(row, "✓ Зөвшөөрөх", lambda: self._decide_pause("approved"), primary=True).pack(side="left")
+        button(row, "✗ Татгалзах", lambda: self._decide_pause("rejected"), danger=True).pack(side="left", padx=8)
+        tk.Label(row, text="Ctrl / Shift дарж хэд хэдийг зэрэг сонгож болно. Шийдвэрээ дараа нь сольж болно.",
+                 bg=BG, fg=MUTED, font=(FONT, 10)).pack(side="left", padx=8)
+
+    def _render_pauses(self) -> None:
+        tv = self.pause_tv
+        sel = tv.selection()
+        tv.delete(*tv.get_children())
+        items = self.data["pause_requests"]
+        self._pause_items = {}
+        for x in items:
+            iid = f"{x['user_id']}|{x['day']}|{x['id']}"
+            self._pause_items[iid] = x
+            wd = WEEKDAYS[date.fromisoformat(x["day"]).weekday()]
+            status = x["status_text"]
+            if x["status"] == "approved" and not x["ongoing"] and x["counted"] != x["seconds"]:
+                status += f" ({fmt_dur(x['counted'])} тооцсон)"
+            tv.insert("", "end", iid=iid, tags=(x["status"],), values=(
+                f"{x['day'][5:].replace('-', '/')} {wd}", x["name"],
+                f"{x['start'][:5]} – {'одоо' if x['ongoing'] else x['end'][:5]}",
+                fmt_dur(x["seconds"]), x["reason"] or "—", status))
+        if not items:
+            tv.insert("", "end", iid="__none", values=("", "Түр зогсолт алга", "", "", "", ""))
+        keep = [i for i in sel if tv.exists(i) and i in self._pause_items]
+        if keep:
+            tv.selection_set(keep)
+        waiting = sum(1 for x in items if x["status"] == "pending")
+        self.nb.tab(self.pauses_tab, text=f"Түр зогсолт ({waiting})" if waiting else "Түр зогсолт")
+
+    def _decide_pause(self, status: str) -> None:
+        chosen = [self._pause_items[i] for i in self.pause_tv.selection() if i in self._pause_items]
+        if not chosen:
+            return messagebox.showinfo(APP_TITLE, "Жагсаалтаас түр зогсолт сонгоно уу", parent=self)
+
+        def work():
+            for x in chosen:
+                self.api.rpc("wt_admin_decide_pause", {"p_user": x["user_id"], "p_day": x["day"], "p_id": x["id"],
+                                                       "p_status": status, "p_open": x["ongoing"]})
+
+        word = "зөвшөөрлөө" if status == "approved" else "татгалзлаа"
+        self.bg.run(work, lambda _: (self.info.config(text=f"{len(chosen)} түр зогсолтыг {word}", fg=GREEN),
+                                     self.refresh()),
+                    lambda e: (messagebox.showerror(APP_TITLE, friendly(e), parent=self), self.refresh()))
 
     # ================================================================== Хэрэглэгчид (админ)
     def _build_users_tab(self) -> None:
@@ -860,12 +942,13 @@ class Dashboard(tk.Toplevel):
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
             w.writerow(["Ажилтан", "Компьютер", "Хэлтэс", "Огноо", "Ажилласан (мин)", "Гарсан (мин)", "Ирсэн", "Явсан",
-                        "Аппууд (мин)"])
+                        "Зөвшөөрсөн зогсолт (мин)", "Аппууд (мин)"])
             for p in self.data["people"]:
                 d = p["day"]
                 w.writerow([p["name"], p["email"], p["department"], self.data["day"],
                             round(d["work_seconds"] / 60), round(d["away_seconds"] / 60), d["first_seen"] or "",
-                            d["last_seen"] or "", "; ".join(f"{a} {round(s / 60)}" for a, s in d["apps"])])
+                            d["last_seen"] or "", round(d.get("approved_pause_sec", 0) / 60),
+                            "; ".join(f"{a} {round(s / 60)}" for a, s in d["apps"])])
         self.info.config(text=f"Хадгаллаа: {path}", fg=GREEN)
 
 
@@ -915,11 +998,24 @@ class DetailWindow(tk.Toplevel):
         rng = dd.day_range([d["periods"]], sset)
         cv = tk.Canvas(self, width=W, height=46, bg=BG, highlightthickness=0)
         cv.pack(anchor="w")
-        draw_timeline(cv, 0, 5, W, 22, d["periods"], rng, sset, d["flags"])
+        draw_timeline(cv, 0, 5, W, 22, d["periods"], rng, sset, d["flags"], pauses=d["pauses"])
         step = 7200 if rng[1] - rng[0] > 10 * 3600 else 3600
         for h in range(rng[0], rng[1] + 1, step):
             x = (h - rng[0]) / max(1, rng[1] - rng[0]) * W
             cv.create_text(min(max(x, 18), W - 18), 38, text=f"{h // 3600:02d}:00", font=(FONT, 9), fill=MUTED)
+
+        pauses = d["pauses"]
+        if pauses:
+            extra = f" · ажилласанд нэмсэн {fmt_dur(d['approved_pause_sec'])}" if d["approved_pause_sec"] else ""
+            tk.Label(self, text=f"⏸ Түр зогсолт ({len(pauses)}){extra}", font=(FONT, 12, "bold"), fg=FG,
+                     bg=BG).pack(anchor="w", pady=(8, 2))
+            for x in pauses[:8]:
+                end = "одоо" if x["ongoing"] else x["end"][:5]
+                tk.Label(self, text=f"{x['start'][:5]} – {end}   ({fmt_dur(x['seconds'])})   {x['reason'][:50]}   "
+                                    f"— {x['status_text']}", font=(FONT, 11), fg=PAUSE_COLOR[x["status"]], bg=BG,
+                         justify="left").pack(anchor="w")
+            if len(pauses) > 8:
+                tk.Label(self, text=f"… бас {len(pauses) - 8}", font=(FONT, 11), fg=MUTED, bg=BG).pack(anchor="w")
 
         flags = [(k, a, b) for k, a, b in d["flags"] if dd.to_sec(b) - dd.to_sec(a) >= 30]
         if flags:

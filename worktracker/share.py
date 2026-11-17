@@ -5,7 +5,8 @@
     people/<uid>/profile.json         ажилтны нэр, Windows хэрэглэгч, компьютер (ажилтны програм бичнэ)
     people/<uid>/live.json            одоогийн төлөв (минут тутам)
     people/<uid>/face.json            царайн хээ (128 тоо × 5, зураг биш) эсвэл татгалзсан тэмдэг — ажилтан зөвшөөрвөл
-    people/<uid>/days/<өдөр>.json     өдрийн дүн (+ srv_first/srv_last — зөвхөн сервер бичнэ)
+    people/<uid>/days/<өдөр>.json     өдрийн дүн, түр зогсолт + шалтгаан (+ srv_first/srv_last — зөвхөн сервер бичнэ)
+    people/<uid>/pause_decisions.json админы шийдвэр: түр зогсолтыг зөвшөөрсөн/татгалзсан (зөвхөн админ бичнэ)
     hub_uptime.json                   админы сервер асаалттай байсан үеүд (hub.py)
     hub_time.json                     админы компьютерийн цаг интернэтийнхээс хэр зөрүүтэй (hub.py)
 
@@ -39,6 +40,9 @@ HMS_RE = re.compile(r"^\d{2}:\d{2}:\d{2}$")
 STATUSES = ("working", "away", "offline")
 CAMERA_STATES = ("ok", "blocked", "static", "stranger", "none")
 FACE_FILE = "face.json"
+PAUSE_DECISIONS_FILE = "pause_decisions.json"
+PAUSE_ID_RE = re.compile(r"^[0-9a-f]{6,32}$")
+PAUSE_TEXT = {"pending": "Хүлээгдэж байна", "approved": "Зөвшөөрсөн", "rejected": "Татгалзсан"}
 
 _MESSAGES = {
     "admin only": "Зөвхөн админ хийх боломжтой",
@@ -53,6 +57,7 @@ _MESSAGES = {
     "rate limit": "Хэт олон оролдлого — түр хүлээгээд дахин оролдоно",
     "already enrolled": "Царай аль хэдийн бүртгэлтэй — дахин бүртгүүлэх бол админ \"Царай шинэчлэх\" дарна уу",
     "invalid face data": "Царайн мэдээлэл буруу байна — дахин оролдоно уу",
+    "pause not found": "Түр зогсолт олдсонгүй (ажилтны програм хараахан илгээгээгүй байж магадгүй)",
 }
 
 
@@ -81,6 +86,21 @@ def _clock_jumps(v) -> list:
             out.append([str(at)[:8], int(delta)] + ([str(kind[0])[:10]] if kind and kind[0] else []))
         except (TypeError, ValueError):
             continue
+    return out
+
+
+def _pauses(v) -> list:
+    """Ажилтны түр зогсолтууд: [[id, "10:15:00", "10:40:00", "шалтгаан"], ...] — шалгаж, хэмжээг нь хязгаарлана."""
+    out = []
+    for item in (v if isinstance(v, list) else [])[-100:]:
+        try:
+            pid, start, end, reason = item
+        except (TypeError, ValueError):
+            continue
+        pid, start, end = str(pid), str(start), str(end)
+        if not PAUSE_ID_RE.match(pid) or not HMS_RE.match(start) or not HMS_RE.match(end):
+            continue
+        out.append([pid, start, max(start, end), " ".join(str(reason or "").split())[:200]])
     return out
 
 
@@ -373,6 +393,13 @@ class ShareClient:
                 if lv:
                     out.append(dict(lv, user_id=d.name))
             return out
+        if table == "wt_pause_decisions":
+            out = []
+            for d in self._person_dirs():
+                dec = read_json(d / PAUSE_DECISIONS_FILE, {})
+                if isinstance(dec, dict) and dec:
+                    out.append({"user_id": d.name, "decisions": dec})
+            return out
         if table == "wt_hub_time":
             t = read_json(self.root / TIME_FILE, {})
             return [t] if isinstance(t, dict) and t else []
@@ -460,6 +487,7 @@ class ShareClient:
                 "last_seen": _short(p.get("p_last_seen"), 8),
                 "apps": p.get("p_apps") or [], "periods": p.get("p_periods") or [], "flags": p.get("p_flags") or [],
                 "clock_jumps": _clock_jumps(p.get("p_clock_jumps")),
+                "pauses": _pauses(p.get("p_pauses")),
                 "updated_at": now,
                 **srv,
             })
@@ -503,6 +531,37 @@ class ShareClient:
             raise ShareError("invalid face data")
         write_json(path, {"embeddings": emb, "consent": True, "enrolled_at": utcnow_iso()})
         return "enrolled"
+
+    # ------------------------------------------------------------------ түр зогсолт
+    def _wt_pause_status(self, p: dict) -> dict:  # noqa: ARG002
+        """Ажилтан (зөвхөн өөрийнхөө) түр зогсолтын админы шийдвэрийг харна: {id: "approved" | "rejected"}."""
+        if self._is_removed():
+            raise ShareError("removed by admin")
+        dec = read_json(self.people_dir / self.user_id / PAUSE_DECISIONS_FILE, {}) or {}
+        return {k: v.get("status") for k, v in dec.items() if isinstance(v, dict) and v.get("status") in PAUSE_TEXT}
+
+    def _wt_admin_decide_pause(self, p: dict) -> str:
+        """Админ ажилтны түр зогсолтыг зөвшөөрнө (ажилласан цагт тооцогдоно) эсвэл татгалзана.
+        Шийдвэр гаргах үеийн эхэлсэн/дууссан цагийг хадгална — дараа нь ажилтны програм хугацааг сунгаж чадахгүй.
+        p_open=True бол зогсолт үргэлжилж байхад шийдсэн → дуусах хүртэлх бүх хугацаа тооцогдоно."""
+        self._require_admin()
+        uid, day, pid = str(p.get("p_user") or ""), str(p.get("p_day") or ""), str(p.get("p_id") or "")
+        status = p.get("p_status")
+        target = self.people_dir / uid
+        if not uid or "/" in uid or "\\" in uid or uid in (".", "..") or not target.is_dir():
+            raise ShareError("user not found")
+        if not DAY_RE.match(day) or not PAUSE_ID_RE.match(pid) or status not in ("approved", "rejected"):
+            raise ShareError("pause not found")
+        pause = next((x for x in (read_json(target / "days" / f"{day}.json", {}) or {}).get("pauses") or []
+                      if isinstance(x, list) and x and x[0] == pid), None)
+        if pause is None:
+            raise ShareError("pause not found")
+        path = target / PAUSE_DECISIONS_FILE
+        dec = read_json(path, {}) or {}
+        dec[pid] = {"status": status, "day": day, "start": pause[1], "end": pause[2], "open": bool(p.get("p_open")),
+                    "reason": pause[3], "decided_at": utcnow_iso()}
+        write_json(path, dec)
+        return status
 
     def set_name(self, name: str) -> None:
         """Ажилтан нэрээ солибол дараагийн бичилтэд profile.json шинэчлэгдэнэ."""

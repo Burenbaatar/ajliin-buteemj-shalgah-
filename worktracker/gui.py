@@ -18,7 +18,7 @@ from .client import make_client
 from .config import HUB_PORT, check_password, load_admin, save_hub
 from .notify import channels_enabled
 from .report import build_report, save_report
-from .share import default_name
+from .share import PAUSE_TEXT, default_name
 from .tracker import WORKING
 from .uiutil import BG, FG, FONT, GREEN, MUTED, RED, Bg, button, clear, fmt_dur, friendly, set_app_icon
 
@@ -28,6 +28,11 @@ CAMERA_WARN = {"blocked": "⚠ Камер таглагдсан байна", "sta
                "stranger": "⚠ Өөр хүн суусан (бүртгэлтэй царай биш)"}
 PAUSED_COLOR = "#9a6700"
 FACE_CHECK_SEC = 600  # админ царай танихыг асаасан эсэх, бүртгэлтэй эсэхийг ийм давтамжтай шалгана
+PAUSE_CHECK_SEC = 60  # түр зогсолтыг админ зөвшөөрсөн эсэхийг ийм давтамжтай шалгана
+PAUSE_STATUS_COLOR = {"pending": PAUSED_COLOR, "approved": GREEN, "rejected": RED}
+PAUSE_PROMPT = ("Яагаад түр зогсоож байна вэ?\n\n"
+                "Шалтгаан админд очно. Админ зөвшөөрвөл зогссон хугацаа ажилласан цагт тооцогдоно,\n"
+                "татгалзвал «Ажлаас гарсан» хэвээр үлдэнэ.")
 FACE_CONSENT_TEXT = (
     "Админ царай танихыг асаасан байна — таны компьютер дээр өөр хүн сууж ажиллаж байгаа эсэхийг шалгана.\n\n"
     "• Камер руу 5 секунд харж нэг удаа бүртгүүлнэ.\n"
@@ -113,6 +118,15 @@ def _hms(sec: float) -> str:
     return f"{sec // 3600}:{sec % 3600 // 60:02d}:{sec % 60:02d}"
 
 
+def _span_sec(start: str, end: str) -> int:
+    """"10:15:00" – "10:40:30" → 1530 сек."""
+    try:
+        a, b = ([int(x) for x in t.split(":")] for t in (start, end))
+        return max(0, (b[0] - a[0]) * 3600 + (b[1] - a[1]) * 60 + (b[2] - a[2]))
+    except (ValueError, IndexError, AttributeError):
+        return 0
+
+
 class MainWindow:
     def __init__(self, root: tk.Tk, app: App, bg: Bg, tray: Tray | None = None, admin: bool = False):
         self.root, self.app, self.bg, self.tray, self.admin = root, app, bg, tray, admin
@@ -146,22 +160,24 @@ class MainWindow:
         body = tk.Frame(root, bg=BG, padx=16, pady=10)
         body.pack(fill="both", expand=True)
         self.rows: dict[str, tk.Label] = {}
-        for i, (key, caption) in enumerate([("name", "Ажилтан"), ("away", "Ажлаас гарсан"), ("app", "Одоогийн апп"),
-                                            ("cam", "Камер"), ("cloud", "Админ руу")]):
+        info_rows = [("name", "Ажилтан"), ("away", "Ажлаас гарсан"), ("pause", "Түр зогсолт"), ("app", "Одоогийн апп"),
+                     ("cam", "Камер"), ("cloud", "Админ руу")]
+        for i, (key, caption) in enumerate(info_rows):
             tk.Label(body, text=caption, font=(FONT, 11), fg=MUTED, bg=BG).grid(row=i, column=0, sticky="w", pady=2)
             lbl = tk.Label(body, text="", font=(FONT, 11), fg=FG, bg=BG, anchor="w", width=34)
             lbl.grid(row=i, column=1, sticky="w", padx=(10, 0), pady=2)
             self.rows[key] = lbl
         self.rows["name"].config(text=app.cfg["employee_name"] or "-")
+        self.rows["pause"].config(text="—", fg=MUTED)
 
         tk.Label(body, text="Өнөөдрийн аппууд", font=(FONT, 12, "bold"), fg=FG, bg=BG).grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=(12, 4))
+            row=len(info_rows), column=0, columnspan=2, sticky="w", pady=(12, 4))
         self.app_rows: list[tuple[tk.Label, tk.Label]] = []
         for i in range(TOP_N):
             a = tk.Label(body, text="", font=(FONT, 11), fg=FG, bg=BG, anchor="w")
             b = tk.Label(body, text="", font=(FONT, 11), fg=MUTED, bg=BG, anchor="e")
-            a.grid(row=6 + i, column=0, sticky="w")
-            b.grid(row=6 + i, column=1, sticky="e")
+            a.grid(row=len(info_rows) + 1 + i, column=0, sticky="w")
+            b.grid(row=len(info_rows) + 1 + i, column=1, sticky="e")
             self.app_rows.append((a, b))
 
         # --- товчнууд
@@ -188,6 +204,13 @@ class MainWindow:
         self.update_btn = button(root, "", self.install_update, primary=True)
         self._face_next = time.monotonic() + 5  # эхлэхэд тохиргоо татагдтал хүлээнэ
         self._face_asked = False
+        # Түр зогсолтын админы шийдвэр: id → pending/approved/rejected
+        self._pause_next = time.monotonic() + 8
+        self._pause_status: dict[str, str] = {}
+        self._pause_text = ("—", MUTED)
+        self._approved_sec = 0.0
+        self._pause_unsupported = False  # админы програм хуучин (/api/pauses байхгүй)
+        self._pause_seen = False
         self.refresh()
 
     def refresh(self) -> None:
@@ -197,8 +220,21 @@ class MainWindow:
             w.config(bg=color)
         self.status_lbl.config(text=f"{'⏸' if s['paused'] else '●'} {s['status_text']}")
         self.pause_btn.config(text="▶ Үргэлжлүүлэх" if s["paused"] else "⏸ Зогсоох")
-        self.timer_lbl.config(text=_hms(s["work_seconds"]))
+        # Админ зөвшөөрсөн түр зогсолт ажилласан цагт орно (самбартай ижил)
+        self.timer_lbl.config(text=_hms(s["work_seconds"] + self._approved_sec))
+        self.timer_caption.config(text="Өнөөдөр ажилласан" + (
+            f" (зөвшөөрсөн зогсолт {fmt_dur(self._approved_sec)} орсон)" if self._approved_sec >= 60 else ""))
         self.rows["away"].config(text=fmt_dur(s["away_seconds"]))
+        if s["paused"]:
+            st = self._pause_status.get(s.get("pause_id") or "", "pending")
+            text = f"⏸ {(s.get('pause_reason') or 'шалтгаангүй')[:20]}"
+            self.rows["pause"].config(text=text + (f" · {PAUSE_TEXT[st]}" if self.app.api else ""),
+                                      fg=PAUSE_STATUS_COLOR[st])
+        else:
+            self.rows["pause"].config(text=self._pause_text[0], fg=self._pause_text[1])
+        if not self._pause_unsupported and time.monotonic() >= self._pause_next:
+            self._pause_next = time.monotonic() + PAUSE_CHECK_SEC
+            self.check_pauses()
         self.rows["app"].config(text=(s["app"] or "-")[:32])
         if s["paused"]:
             cam = "Унтраасан (зогсоосон үед)"
@@ -342,15 +378,80 @@ class MainWindow:
         (messagebox.showinfo if ok else messagebox.showwarning)(APP_TITLE, msg, parent=self.root)
 
     def toggle_pause(self) -> None:
-        """Гараар зогсоох / үргэлжлүүлэх. Зогссон хугацааг "гарсан"-д тооцно."""
-        self.app.tracker.set_paused(not self.app.tracker.paused)
+        """Гараар зогсоох / үргэлжлүүлэх. Зогсоохдоо шалтгаан асууна: админд очно, админ зөвшөөрвөл зогссон
+        хугацаа ажилласан цагт тооцогдоно (татгалзвал "гарсан" хэвээр)."""
+        tracker = self.app.tracker
+        if tracker.paused:
+            tracker.set_paused(False)
+            msg = "Цаг тоолох үргэлжиллээ."
+        else:
+            reason = self.ask_pause_reason()
+            if reason is None:
+                return
+            tracker.set_paused(True, reason)
+            msg = ("Түр зогслоо. Шалтгааныг админд илгээлээ — зөвшөөрвөл ажилласан цагт тооцогдоно."
+                   if self.app.api else "Цаг тоолох зогслоо. \"Үргэлжлүүлэх\" дарж эхлүүлнэ.")
+        self._pause_next = time.monotonic() + 3  # төлөвийн мөрийг удахгүй шинэчилнэ
         if self.tray:
             self.tray.update_menu()
-            self.tray.notify("Цаг тоолох зогслоо. \"Үргэлжлүүлэх\" дарж эхлүүлнэ." if self.app.tracker.paused
-                             else "Цаг тоолох үргэлжиллээ.")
+            self.tray.notify(msg)
         if self._job:
             self.root.after_cancel(self._job)
         self.refresh()
+
+    def ask_pause_reason(self) -> str | None:
+        """Түр зогсоох шалтгаан (заавал). Цуцалбал None — зогсоохгүй."""
+        if self.root.state() == "withdrawn":  # tray-аас дарсан
+            self.root.deiconify()
+            self.root.lift()
+        prompt = PAUSE_PROMPT if self.app.api else "Яагаад түр зогсоож байна вэ?"
+        while True:
+            reason = simpledialog.askstring("Түр зогсоох", prompt, parent=self.root)
+            if reason is None:
+                return None
+            reason = " ".join(reason.split())[:200]
+            if reason:
+                return reason
+            messagebox.showwarning(APP_TITLE, "Шалтгаанаа бичнэ үү (жишээ нь: эмнэлэг, банк, хурал).",
+                                   parent=self.root)
+
+    def check_pauses(self) -> None:
+        """Өнөөдрийн түр зогсолтуудыг админ зөвшөөрсөн эсэхийг серверээс асууна."""
+        pauses = self.app.storage.get_day(self.app.tracker.clock.today().isoformat())["pauses"]
+        if not pauses:
+            self._approved_sec = 0.0
+            self._pause_text = ("—", MUTED)
+            return
+        if not self.app.api:
+            return self._pauses_loaded({}, pauses)
+        self.bg.run(lambda: self.app.api.rpc("wt_pause_status"), lambda st: self._pauses_loaded(st, pauses),
+                    self._pauses_failed)
+
+    def _pauses_failed(self, exc: Exception) -> None:
+        if str(exc).strip().lower() == "not found":  # админы програм хуучин хувилбартай
+            self._pause_unsupported = True
+            self._pause_text = ("Админы програм шийдвэр илгээдэггүй (хуучин)", MUTED)
+        else:
+            log.info("Түр зогсолтын шийдвэрийг шалгаж чадсангүй: %s", friendly(exc))
+
+    def _pauses_loaded(self, statuses, pauses: list[dict]) -> None:
+        statuses = statuses if isinstance(statuses, dict) else {}
+        today = {p["id"]: p for p in pauses}
+        if self.tray and self._pause_seen:  # анх ачаалахад биш, админ дөнгөж шийдсэн үед л мэдэгдэнэ
+            for pid, st in statuses.items():
+                if pid in today and st in ("approved", "rejected") and self._pause_status.get(pid) != st:
+                    self.tray.notify(f"Түр зогсолт ({today[pid]['start'][:5]}): админ {PAUSE_TEXT[st].lower()}"
+                                     + (" — ажилласан цагт тооцогдоно" if st == "approved" else ""))
+        self._pause_seen = True
+        self._pause_status = dict(statuses)
+        self._approved_sec = float(sum(_span_sec(p["start"], p["end"]) for p in pauses
+                                       if statuses.get(p["id"]) == "approved"))
+        last = pauses[-1]
+        st = statuses.get(last["id"], "pending")
+        more = f" (өнөөдөр {len(pauses)})" if len(pauses) > 1 else ""
+        span = f"{last['start'][:5]}–{last['end'][:5]}"
+        self._pause_text = ((f"{span} · {PAUSE_TEXT[st]}{more}", PAUSE_STATUS_COLOR[st]) if self.app.api
+                            else (f"{span} · {last['reason'][:18]}{more}", FG))
 
     # ------------------------------------------------------------------ царай таних
     def check_face(self) -> None:

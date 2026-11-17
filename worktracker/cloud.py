@@ -184,6 +184,8 @@ class CloudSync:
             "p_periods": [[p["status"], p["start"], p["end"]] for p in merge_periods(d["periods"])][-300:],
             "p_flags": [[f["kind"], f["start"], f["end"]] for f in d.get("flags", [])][-200:],
             "p_clock_jumps": d.get("clock_jumps", [])[-100:],
+            # Түр зогсолт + шалтгаан → админ самбараас зөвшөөрнө / татгалзана
+            "p_pauses": [[p["id"], p["start"], p["end"], p.get("reason", "")] for p in d.get("pauses", [])][-100:],
             "p_live": live,
         }
         if live:

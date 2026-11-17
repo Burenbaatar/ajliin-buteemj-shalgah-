@@ -149,6 +149,8 @@ class HubClient:
         if fn == "wt_face_set":
             body = {"embeddings": (params or {}).get("p_embeddings"), "declined": bool((params or {}).get("p_declined"))}
             return self._signed("POST", "/api/face", body, timeout=timeout).get("result")
+        if fn == "wt_pause_status":
+            return self._signed("GET", "/api/pauses", timeout=timeout).get("result")
         if fn != "wt_push":
             raise ShareError(f"unknown function: {fn}")
         p = dict(params or {})

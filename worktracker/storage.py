@@ -19,8 +19,9 @@ _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _empty_day() -> dict:
+    # pauses: "Зогсоох" дарсан үеүд {id, start, end, reason} — админ зөвшөөрвөл ажилласан цагт тооцогдоно
     return {"work_seconds": 0.0, "away_seconds": 0.0, "first_seen": None, "last_seen": None,
-            "apps": {}, "periods": [], "flags": [], "clock_jumps": []}
+            "apps": {}, "periods": [], "flags": [], "clock_jumps": [], "pauses": []}
 
 
 def shift_hms(t: str, delta_sec: float) -> str:
@@ -134,6 +135,17 @@ class Storage:
     def update_flag_end(self, flag_id: str, end: str) -> None:
         self._close("flags", flag_id, end)
 
+    def open_pause(self, day: str, pause_id: str, start: str, reason: str) -> str:
+        """Ажилтан "Зогсоох" дарж шалтгаанаа бичсэн. pause_id нь админы шийдвэрийг холбоно (цаг шилжсэн ч өөрчлөгдөхгүй)."""
+        with self._lock:
+            d = self._day(day)
+            d["pauses"].append({"id": pause_id, "start": start, "end": start, "reason": reason})
+            self._save_day(day)
+            return f"{day}#{len(d['pauses']) - 1}"
+
+    def update_pause_end(self, item_id: str, end: str) -> None:
+        self._close("pauses", item_id, end)
+
     def add_clock_jump(self, day: str, at: str, delta_sec: int, kind: str | None = None) -> None:
         """Компьютерийн цаг өөрчлөгдсөн: [цаг (програмын зөв цагаар), хэдэн сек (сөрөг = ухраасан/хоцорсон)].
         kind="server" — админы компьютертэй тулгахад илэрсэн (жишээ нь цагаа ухрааж дахин ачаалсан)."""
@@ -147,7 +159,7 @@ class Storage:
         """Одоогийн бичлэгийн тоо, ирсэн/явсан цаг — shift_since()-д "эндээс хойш" гэж заана."""
         with self._lock:
             d = self._day(day)
-            return {"periods": len(d["periods"]), "flags": len(d["flags"]),
+            return {"periods": len(d["periods"]), "flags": len(d["flags"]), "pauses": len(d["pauses"]),
                     "jumps": len(d.get("clock_jumps") or []), "first": d["first_seen"], "last": d["last_seen"]}
 
     def shift_since(self, day: str, mark: dict, delta_sec: float, first: str | None, last: str | None) -> None:
@@ -155,8 +167,8 @@ class Storage:
         шилжүүлж, ирсэн/явсан цагийг (tracker тооцоолсон) солино."""
         with self._lock:
             d = self._day(day)
-            for key in ("periods", "flags"):
-                for item in d[key][mark[key]:]:
+            for key in ("periods", "flags", "pauses"):
+                for item in d[key][mark.get(key, 0):]:
                     item["start"], item["end"] = shift_hms(item["start"], delta_sec), shift_hms(item["end"], delta_sec)
             jumps = d.get("clock_jumps") or []
             for j in jumps[min(mark["jumps"], len(jumps)):]:
@@ -190,6 +202,7 @@ class Storage:
                 "periods": periods,
                 "flags": flags,
                 "clock_jumps": [list(j) for j in d.get("clock_jumps") or []],
+                "pauses": sorted((dict(p) for p in d["pauses"]), key=lambda p: p["start"]),
             }
 
     def days_with_data(self) -> list[str]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -48,6 +49,10 @@ class Tracker:
 
         self.status = WORKING
         self.paused = False  # ажилтан "Зогсоох" дарсан: дахин "Үргэлжлүүлэх" дартал гарсанд тооцно
+        # Одоогийн түр зогсолт: шалтгаан нь админд очно, зөвшөөрвөл самбар ажилласан цагт тооцно
+        self.pause_id: str | None = None
+        self.pause_reason = ""
+        self._pause_item: str | None = None
         self.current_app: str | None = None
         self.camera_ok = False
         self.face_visible = False
@@ -108,6 +113,8 @@ class Tracker:
                 "status": self.status,
                 "status_text": PAUSED_TEXT if self.paused else STATUS_TEXT[self.status],
                 "paused": self.paused,
+                "pause_id": self.pause_id,
+                "pause_reason": self.pause_reason,
                 "app": self.current_app,
                 "work_seconds": self._today_work + pending,
                 "away_seconds": self._today_away,
@@ -122,8 +129,9 @@ class Tracker:
         with self._lock:
             self._flush(self._poll())
 
-    def set_paused(self, paused: bool) -> None:
-        """Гараар зогсоох / үргэлжлүүлэх. Зогссон хугацаа "гарсан"-д тооцогдоно (ажилласан цаг нэмэгдэхгүй)."""
+    def set_paused(self, paused: bool, reason: str = "") -> None:
+        """Гараар зогсоох / үргэлжлүүлэх. Зогссон хугацаа "гарсан"-д тооцогдоно (ажилласан цаг нэмэгдэхгүй).
+        Шалтгаантай зогсолтыг (pauses) админд илгээнэ — админ зөвшөөрвөл самбар тэр хугацааг ажилласанд тооцно."""
         with self._lock:
             if paused == self.paused:
                 return
@@ -133,9 +141,16 @@ class Tracker:
                 pending = self._commit_pending(to_work=False)
                 if self.status == WORKING:
                     self._switch(AWAY, now - timedelta(seconds=pending))
+                self.pause_id, self.pause_reason = uuid.uuid4().hex[:12], reason.strip()[:200]
+                self._pause_item = self.storage.open_pause(self._day, self.pause_id, _hms(now), self.pause_reason)
             else:
                 self._last_evidence = time.monotonic()  # дараагийн шалгалт хүн байгаа эсэхийг шийднэ
-            log.info("Гараар %s", "зогсоолоо" if paused else "үргэлжлүүллээ")
+                if self._pause_item is not None:
+                    self.storage.update_pause_end(self._pause_item, _hms(now))
+                self._pause_item = self.pause_id = None
+                self.pause_reason = ""
+            log.info("Гараар %s%s", "зогсоолоо" if paused else "үргэлжлүүллээ",
+                     f" ({self.pause_reason})" if paused and self.pause_reason else "")
         if self.presence:
             self.presence.set_paused(paused)  # зогсоосон үед камерыг бүрэн хаана (гэрэл унтарна)
         if self.on_status_change:
@@ -175,6 +190,7 @@ class Tracker:
                     self._load_today()
                     self._mark_session()
                     self._reopen_clock_flag(now)
+                    self._reopen_pause(now)
                 self._last_evidence = mono
                 self.status = AWAY if self.paused else WORKING
                 self._open_period(self.status, now)
@@ -191,6 +207,7 @@ class Tracker:
                 self._mark_session()
                 self._open_period(self.status, now.replace(hour=0, minute=0, second=0, microsecond=0))
                 self._reopen_clock_flag(now.replace(hour=0, minute=0, second=0, microsecond=0))
+                self._reopen_pause(now.replace(hour=0, minute=0, second=0, microsecond=0))
 
             # --- Мэдрэгчүүд
             locked = activity.is_screen_locked()
@@ -365,6 +382,12 @@ class Tracker:
         if self._clock_flag_id is not None:
             self._clock_flag_id = self.storage.open_flag(self._day, "clock", _hms(at))
 
+    def _reopen_pause(self, at: datetime) -> None:
+        """Шөнө дунд зогссон хэвээр байвал шинэ өдөрт ижил шалтгаантай шинэ зогсолт (админ тусад нь шийднэ)."""
+        if self._pause_item is not None:
+            self.pause_id = uuid.uuid4().hex[:12]
+            self._pause_item = self.storage.open_pause(self._day, self.pause_id, _hms(at), self.pause_reason)
+
     def _open_period(self, status: str, at: datetime) -> None:
         self._period_id = self.storage.open_period(self._day, status, _hms(at))
 
@@ -382,5 +405,7 @@ class Tracker:
             self.storage.update_flag_end(self._flag_id, _hms(now))
         if self._clock_flag_id is not None:
             self.storage.update_flag_end(self._clock_flag_id, _hms(now))
+        if self._pause_item is not None:
+            self.storage.update_pause_end(self._pause_item, _hms(now))
         self.clock.save(self.storage)
         self._last_flush = time.monotonic()

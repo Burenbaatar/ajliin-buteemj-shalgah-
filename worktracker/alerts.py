@@ -2,7 +2,8 @@
 
 ⏰ ирээгүй · 🚶 удаан гарсан · ⚠️ ажлын цагаар програм хаалттай · 📷 камер таглагдсан · 🖼 хөдөлгөөнгүй царай
 · 👤 өөр хүн суусан (царай таних асаалттай бол)
-· 🕐 компьютерийн цагийг гараар өөрчилсөн / админы компьютерт ирсэн цагаасаа удаан холбогдоогүй.
+· 🕐 компьютерийн цагийг гараар өөрчилсөн / админы компьютерт ирсэн цагаасаа удаан холбогдоогүй
+· ⏸ ажилтан түр зогсоож шалтгаанаа бичсэн (админ самбарын «Түр зогсолт» табаас шийднэ).
 Нэг үйл явдлыг нэг л удаа илгээнэ (илгээсэн түүх: data_dir()/alerts_log.json).
 """
 from __future__ import annotations
@@ -53,7 +54,7 @@ def _minutes(s: dict, key: str, default: int) -> int:
 
 
 def collect(profiles, departments, live, today_rows, settings: dict, sent: dict,
-            now: datetime | None = None, uptime=None) -> list[tuple[str | None, str]]:
+            now: datetime | None = None, uptime=None, decisions=None) -> list[tuple[str | None, str]]:
     """Илгээх мессежүүдийг [(chat_id, текст)] буцаана. `sent`-д илгээснийг тэмдэглэнэ."""
     s = settings or {}
     now = now or datetime.now(timezone.utc)
@@ -145,6 +146,14 @@ def collect(profiles, departments, live, today_rows, settings: dict, sent: dict,
             alert(uid, "server_gap", f"{today.isoformat()}|{g['hostname']}",
                   f"🕐 {name(uid)}: програм {g['first'][:5]}-д ирсэн гэж бүртгэсэн ч админы компьютерт "
                   f"{g['server'][:5]}-д анх холбогдсон (сүлжээ тасарсан эсвэл цагаа өөрчилсөн байж болно)")
+        # 7) Түр зогсоож шалтгаанаа бичсэн — админ хараахан шийдээгүй
+        decided = (decisions or {}).get(uid) or {}
+        for pz in r.get("pauses") or []:
+            if not isinstance(pz, list) or len(pz) != 4 or pz[0] in decided:
+                continue
+            alert(uid, "pause", f"{today.isoformat()}|{pz[0]}",
+                  f"⏸ {name(uid)} {str(pz[1])[:5]}-д түр зогсоолоо: «{pz[3] or 'шалтгаангүй'}»\n"
+                  "Самбар → «Түр зогсолт» табаас зөвшөөрөх / татгалзана уу")
 
     cutoff = (now - timedelta(days=60)).isoformat(timespec="seconds")
     for k in [k for k, v in sent.items() if v < cutoff]:
@@ -190,9 +199,10 @@ class AlertRunner:
         except (OSError, ValueError):
             sent = {}
         uptime = next((r["spans"] for r in self.share.select("wt_hub_uptime", day=f"eq.{today}")), [])
+        decisions = {r["user_id"]: r["decisions"] for r in self.share.select("wt_pause_decisions")}
         msgs = collect(self.share.select("wt_profiles"), self.share.select("wt_departments"),
                        self.share.select("wt_live"), self.share.select("wt_daily", day=f"eq.{today}"),
-                       settings, sent, now, uptime=uptime)
+                       settings, sent, now, uptime=uptime, decisions=decisions)
         self.path.write_text(json.dumps(sent, ensure_ascii=False), encoding="utf-8")
         send = send or (lambda chat, text: tg_send(token, chat, text))
         for chat, text in msgs:

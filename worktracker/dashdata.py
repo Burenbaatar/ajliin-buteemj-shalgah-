@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from .share import ShareClient
+from .share import PAUSE_TEXT, ShareClient
 
 OFFLINE_AFTER_SEC = 180  # сүүлийн мэдээллээс хойш ийм удаан бол "Офлайн"
 # Програмын бүртгэлээр ирсэн цагаас хойш ийм удаан админы компьютерт холбогдоогүй бол (сервер асаалттай байхад) ⚠
@@ -84,7 +84,7 @@ def settings_with_defaults(s: dict | None) -> dict:
 def merge_daily(rows: list[dict]) -> dict:
     """Нэг хүний нэг өдрийн хэд хэдэн компьютерийн мөрийг нэгтгэнэ."""
     out = {"work_seconds": 0, "away_seconds": 0, "first_seen": None, "last_seen": None,
-           "apps": [], "periods": [], "flags": [], "clock_jumps": [], "hostnames": []}
+           "apps": [], "periods": [], "flags": [], "clock_jumps": [], "hostnames": [], "pauses": []}
     apps: dict[str, int] = {}
     for r in rows:
         out["work_seconds"] += r.get("work_seconds") or 0
@@ -98,13 +98,49 @@ def merge_daily(rows: list[dict]) -> dict:
         out["periods"].extend(r.get("periods") or [])
         out["flags"].extend(r.get("flags") or [])
         out["clock_jumps"].extend(r.get("clock_jumps") or [])
+        out["pauses"].extend(r.get("pauses") or [])
         if r.get("hostname"):
             out["hostnames"].append(r["hostname"])
     out["apps"] = sorted(apps.items(), key=lambda kv: kv[1], reverse=True)
     out["periods"].sort(key=lambda p: p[1])
     out["flags"].sort(key=lambda p: p[1])
     out["clock_jumps"].sort(key=lambda j: j[0])
+    out["pauses"].sort(key=lambda p: str(p[1]) if isinstance(p, list) and len(p) > 1 else "")
     return out
+
+
+# ---------------------------------------------------------------------------- түр зогсолт
+def pause_list(raw, decisions: dict | None, ongoing_id: str | None = None) -> list[dict]:
+    """[[id, эхэлсэн, дууссан, шалтгаан], ...] + админы шийдвэр → жагсаалт.
+    counted = ажилласан цагт нэмэх секунд (зөвшөөрсөн бол). Дууссан хойно шийдсэн бол шийдвэр гаргах үеийн
+    хугацаа (ажилтан дараа нь сунгаж чадахгүй), үргэлжилж байхад шийдсэн бол дуусах хүртэлх хугацаа."""
+    out = []
+    for item in raw or []:
+        try:
+            pid, start, end, reason = item
+            seconds = max(0, to_sec(end) - to_sec(start))
+        except (TypeError, ValueError):
+            continue
+        dec = (decisions or {}).get(pid)
+        dec = dec if isinstance(dec, dict) else {}
+        status = dec.get("status") if dec.get("status") in ("approved", "rejected") else "pending"
+        counted = 0
+        if status == "approved":
+            a, b = hm_sec(dec.get("start")), hm_sec(dec.get("end"))
+            counted = seconds if dec.get("open") or a is None or b is None else max(0, b - a)
+        out.append({"id": pid, "start": start, "end": end, "reason": reason, "status": status,
+                    "status_text": PAUSE_TEXT[status], "seconds": seconds, "counted": counted,
+                    "ongoing": pid == ongoing_id})
+    out.sort(key=lambda p: p["start"])
+    return out
+
+
+def ongoing_pause_id(raw, live: dict | None, now: datetime | None = None) -> str | None:
+    """Ажилтан яг одоо зогссон байвал өнөөдрийн хамгийн сүүлийн зогсолтын id."""
+    if not live or not live.get("paused") or live_status(live, now) == "offline":
+        return None
+    items = [p for p in raw or [] if isinstance(p, list) and len(p) == 4]
+    return max(items, key=lambda p: str(p[1]))[0] if items else None
 
 
 # ---------------------------------------------------------------------------- бүтээмж
@@ -241,10 +277,11 @@ def fetch_raw(api: ShareClient, day: str) -> dict:
         "departments": api.select("wt_departments", "id,name,telegram_chat_id", order="name"),
         "live": fetch_live(api),
         "daily": api.select("wt_daily", "user_id,hostname,work_seconds,away_seconds,first_seen,last_seen,apps,"
-                                        "periods,flags,clock_jumps,srv_first,srv_last", day=f"eq.{day}"),
+                                        "periods,flags,clock_jumps,srv_first,srv_last,pauses", day=f"eq.{day}"),
         "uptime": next((r["spans"] for r in api.select("wt_hub_uptime", day=f"eq.{day}")), []),
         "hub_time": next(iter(api.select("wt_hub_time")), None),
-        "week": api.select("wt_daily", "user_id,day,work_seconds", day=[f"gte.{d0}", f"lte.{day}"]),
+        "week": api.select("wt_daily", "user_id,day,work_seconds,pauses", day=[f"gte.{d0}", f"lte.{day}"]),
+        "decisions": api.select("wt_pause_decisions"),
         "settings": (company[0].get("settings") if company else None) or {},
     }
 
@@ -252,25 +289,34 @@ def fetch_raw(api: ShareClient, day: str) -> dict:
 def build_raw(raw: dict, live: list[dict] | None = None) -> dict:
     """fetch_raw-ийн үр дүнг нэгтгэнэ. live өгвөл шинэ одоогийн төлөвөөр солино."""
     return build(raw["profiles"], raw["departments"], raw["live"] if live is None else live, raw["daily"],
-                 raw["week"], raw["day"], settings=raw["settings"], uptime=raw.get("uptime"))
+                 raw["week"], raw["day"], settings=raw["settings"], uptime=raw.get("uptime"),
+                 decisions=raw.get("decisions"))
 
 
 def build(profiles, departments, live, daily, week, day: str, now: datetime | None = None,
-          settings: dict | None = None, uptime=None) -> dict:
+          settings: dict | None = None, uptime=None, decisions=None) -> dict:
     s = settings_with_defaults(settings)
     now_local = now.astimezone().replace(tzinfo=None) if now and now.tzinfo else (now or datetime.now())
     dept_name = {d["id"]: d["name"] for d in departments}
     live_by = {r["user_id"]: r for r in live}
+    dec_by = {r["user_id"]: r.get("decisions") or {} for r in decisions or []}
+    today_iso = date.today().isoformat()
     daily_by: dict[str, list] = {}
     for r in daily:
         daily_by.setdefault(r["user_id"], []).append(r)
+    # 7 хоног: зөвшөөрсөн түр зогсолтыг ажилласанд нэмнэ; "Түр зогсолт" табын жагсаалт
     week_by: dict[str, dict[str, int]] = {}
+    week_pauses: dict[str, list] = {}
     for r in week:
-        cell = week_by.setdefault(r["user_id"], {})
-        cell[r["day"]] = cell.get(r["day"], 0) + (r.get("work_seconds") or 0)
+        uid = r["user_id"]
+        ongoing = ongoing_pause_id(r.get("pauses"), live_by.get(uid), now) if r["day"] == today_iso else None
+        items = pause_list(r.get("pauses"), dec_by.get(uid), ongoing)
+        cell = week_by.setdefault(uid, {})
+        cell[r["day"]] = cell.get(r["day"], 0) + (r.get("work_seconds") or 0) + sum(x["counted"] for x in items)
+        week_pauses.setdefault(uid, []).extend(dict(x, day=r["day"]) for x in items)
     days = [(date.fromisoformat(day) - timedelta(days=6 - i)).isoformat() for i in range(7)]
 
-    is_today = day == date.today().isoformat()
+    is_today = day == today_iso
     people = []
     for p in profiles:
         has_day = p["user_id"] in daily_by
@@ -281,6 +327,12 @@ def build(profiles, departments, live, daily, week, day: str, now: datetime | No
             continue  # тухайн өдөр бүртгүүлээгүй байсан
         lv = live_by.get(p["user_id"])
         d = merge_daily(daily_by.get(p["user_id"], []))
+        # Админ зөвшөөрсөн түр зогсолт → ажилласан цагт нэмж, гарсан цагаас хасна
+        ongoing = ongoing_pause_id(d["pauses"], lv, now) if is_today else None
+        d["pauses"] = pause_list(d["pauses"], dec_by.get(p["user_id"]), ongoing)
+        d["approved_pause_sec"] = sum(x["counted"] for x in d["pauses"])
+        d["work_seconds"] += d["approved_pause_sec"]
+        d["away_seconds"] = max(0, d["away_seconds"] - d["approved_pause_sec"])
         gaps = server_gaps(daily_by.get(p["user_id"], []), uptime)
         wk = week_by.get(p["user_id"], {})
         absent_days = [dd for dd in days if dd not in wk and (not created or dd >= created)
@@ -306,10 +358,17 @@ def build(profiles, departments, live, daily, week, day: str, now: datetime | No
         })
     order = {"working": 0, "away": 1, "offline": 2}
     people.sort(key=lambda x: (order[x["status"]], -x["day"]["work_seconds"], x["name"]))
+    names = {p["user_id"]: p["full_name"] or p["email"] for p in profiles}
+    requests = [dict(x, user_id=uid, name=names[uid]) for uid, items in week_pauses.items() if uid in names
+                for x in items]
+    # Хүлээгдэж байгаа нь эхэндээ, дараа нь шинэ нь дээрээ
+    requests.sort(key=lambda x: (x["day"], x["start"]), reverse=True)
+    requests.sort(key=lambda x: x["status"] != "pending")
     return {
         "day": day,
         "is_today": is_today,
         "people": people,
+        "pause_requests": requests,
         "profiles": profiles,
         "departments": departments,
         "week_days": days,
