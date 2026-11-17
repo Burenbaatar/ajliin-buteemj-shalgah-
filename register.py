@@ -147,19 +147,87 @@ def live_status(employee_id):
     return live if live and time.time() - live["time"] < 30 else None
 
 
+# ---------------------------------------------------------------- түр зогсолт
+PAUSE_STATUS = {"pending": "Хүлээгдэж байна", "approved": "Зөвшөөрсөн", "rejected": "Татгалзсан"}
+
+
+def load_pauses():
+    """pauses.json. Хуучин бичлэгт id, төлөв байхгүй бол нөхнө."""
+    pauses = load("pauses")
+    for pause in pauses:
+        pause.setdefault("id", pause["employee_id"] + "-" + pause["time"])
+        pause.setdefault("status", "pending")
+    return pauses
+
+
 def save_pause(employee_id, reason):
-    """Ажилтан түр зогсоосон шалтгааныг цагтай нь pauses.json-д хадгална."""
+    """Ажилтан түр зогсоосон шалтгааныг цагтай нь pauses.json-д хадгалж, id-г нь буцаана.
+    Админ шалтгааныг харж зөвшөөрөх хүртэл «Хүлээгдэж байна» төлөвтэй."""
     employee = find_employee(employee_id)
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("Шалтгаанаа бичнэ үү.")
-    pause = {"employee_id": employee_id, "employee_name": employee["name"],
-             "reason": reason.strip(), "time": time.strftime("%Y-%m-%d %H:%M:%S")}
-    save("pauses", load("pauses") + [pause])
+    pause = {"id": str(time.time_ns()), "employee_id": employee_id, "employee_name": employee["name"],
+             "reason": reason.strip(), "time": time.strftime("%Y-%m-%d %H:%M:%S"), "status": "pending"}
+    save("pauses", load_pauses() + [pause])
+    return pause["id"]
+
+
+def pause_start(pause):
+    return time.mktime(time.strptime(pause["time"], "%Y-%m-%d %H:%M:%S"))
+
+
+def end_pause(employee_id, pause_id, seconds):
+    """Ажилтан хэмжилтээ үргэлжлүүлсэн эсвэл дуусгасан: түр зогссон хугацааг (сек) бичнэ.
+    Зогсоосноос хойш өнгөрсөн хугацаанаас их байж болохгүй."""
+    pauses = load_pauses()
+    for pause in pauses:
+        if pause["id"] == pause_id and pause["employee_id"] == employee_id and "seconds" not in pause:
+            pause["seconds"] = round(max(0, min(float(seconds), time.time() - pause_start(pause))))
+            save("pauses", pauses)
+            return
+
+
+def track_pauses(employee_id, open_id):
+    """Ажилтны програм 5 сек тутам одоогийн түр зогсолтын id-г илгээнэ (зогсоогоогүй бол None).
+    Тэр зогсолт «одоо ч үргэлжилж байна» гэж цагийг нь бичнэ. Програм гэнэт хаагдсан (crash) бол зогсолт
+    дуусаагүй үлддэг — ажилтан дахин хэмжиж эхлэхэд сүүлд мэдээлэл ирсэн хүртэлх хугацаагаар хаана."""
+    pauses, changed = load_pauses(), False
+    for pause in pauses:
+        if pause["employee_id"] != employee_id or "seconds" in pause:
+            continue
+        if pause["id"] == open_id:
+            pause["seen"] = time.time()
+        else:
+            started = pause_start(pause)
+            pause["seconds"] = round(max(0, pause.get("seen", started) - started))
+        changed = True
+    if changed:
+        save("pauses", pauses)
+
+
+def my_pauses(employee_id):
+    """Ажилтанд илгээх өөрийн өнөөдрийн түр зогсолт: шалтгаан, хугацаа, админы шийдвэр."""
+    return [{key: pause.get(key) for key in ("id", "time", "reason", "seconds", "status")}
+            for pause in pauses_today(employee_id)]
+
+
+def set_pause_status(pause_id, status):
+    """Админ түр зогсолтыг зөвшөөрөх (approved) эсвэл татгалзах (rejected)."""
+    pauses = load_pauses()
+    for pause in pauses:
+        if pause["id"] == pause_id:
+            pause["status"] = status
+    save("pauses", pauses)
+
+
+def pauses_since(date):
+    """date-ээс хойших бүх ажилтны түр зогсолт, шинэ нь эхэндээ."""
+    return [pause for pause in reversed(load_pauses()) if pause["time"][:10] >= date]
 
 
 def pauses_today(employee_id):
     today = time.strftime("%Y-%m-%d")
-    return [item for item in load("pauses") if item["employee_id"] == employee_id and item["time"].startswith(today)]
+    return [item for item in load_pauses() if item["employee_id"] == employee_id and item["time"].startswith(today)]
 
 
 # ---------------------------------------------------------------- админы эрх
@@ -201,7 +269,7 @@ def serve(server):
 def answer(conn):
     try:
         return handle(json.loads(receive(conn)))
-    except (ValueError, KeyError) as error:
+    except (ValueError, KeyError, TypeError) as error:
         return {"error": str(error)}
 
 
@@ -216,7 +284,8 @@ def handle(request):
             raise ValueError("Танд код өгөөгүй байна. Админ таны нэрийг кодтой нь дахин бүртгэнэ.")
         if found[0]["code"] != hash_text(request["code"]):
             raise ValueError("Код буруу.")
-        return {"id": found[0]["id"], "name": found[0]["name"], "face": get_face(found[0]["id"])}   # камер харьцуулах хээ
+        return {"id": found[0]["id"], "name": found[0]["name"], "face": get_face(found[0]["id"]),   # камер харьцуулах хээ
+                "pauses": my_pauses(found[0]["id"])}
     if request["action"] == "face":
         save_face(request["employee_id"], request["feature"])
         return {"ok": True}
@@ -224,13 +293,17 @@ def handle(request):
         find_employee(request["employee_id"])
         for delta in request["deltas"]:
             save_day_delta(request["employee_id"], request["computer"], request["open"], delta)
+        for end in request.get("pause_ends", []):   # дууссан түр зогсолтын хугацаа
+            end_pause(request["employee_id"], end["id"], end["seconds"])
+        if "pause_id" in request:                   # хуучин програм илгээдэггүй — тэр үед юу ч хаахгүй
+            track_pauses(request["employee_id"], request["pause_id"])
         LIVE[request["employee_id"]] = {key: request[key] for key in ("status", "app", "mouse", "reason")}
         LIVE[request["employee_id"]]["camera"] = request.get("camera")   # камер ажиллаж байгаа эсэх (хуучин програм илгээхгүй)
         LIVE[request["employee_id"]]["time"] = time.time()
-        return {"settings": load_settings()}    # ажилтан «гарсан» гэж үзэх хугацааг эндээс мэднэ
+        return {"settings": load_settings(),    # ажилтан «гарсан» гэж үзэх хугацааг эндээс мэднэ
+                "pauses": my_pauses(request["employee_id"])}   # админы шийдвэрийг ажилтан харна
     if request["action"] == "pause":
-        save_pause(request["employee_id"], request["reason"])
-        return {"ok": True}
+        return {"id": save_pause(request["employee_id"], request["reason"])}
     raise ValueError("Үл мэдэгдэх хүсэлт.")
 
 

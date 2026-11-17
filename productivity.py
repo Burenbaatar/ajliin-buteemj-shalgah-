@@ -1,5 +1,5 @@
 """5-р гишүүн — админы самбарын тооцоо: төлөв, хоцролт, бүтээмж, өдрийн явц, камерын шалгалт, 8 хавтан,
-7 хоног, хэлтэс."""
+7 хоног, хэлтэс, зөвшөөрсөн түр зогсолт."""
 STATUS = {"work": "Ажиллаж байна", "away": "Гарсан", "offline": "Офлайн", "absent": "Ирээгүй"}
 COLUMNS = ("Ажилтан", "Одоо", "Одоогийн апп", "Ажилласан", "Гарсан", "Ирсэн – Явсан", "Хоцорсон", "Бүтээмж",
            "Өдрийн явц", "Өөр хүн", "Баталгаажаагүй")
@@ -51,6 +51,24 @@ def timeline_bar(minutes_map):
         states = {minutes_map.get(f"{m // 60:02d}:{m % 60:02d}") for m in range(start, start + 30)}
         bar += "█" if "work" in states else "▒" if "away" in states else "·"
     return bar
+
+
+def add_approved_pauses(records, pauses, date):
+    """Админ зөвшөөрсөн түр зогсолтын хугацааг тухайн өдрийн «Ажилласан»-д нэмж, «Гарсан»-аас хасна.
+    Өдрийн явцад тэр минутууд ажилласан (█) болно. Файлд бичихгүй — зөвхөн самбарт тооцно,
+    тиймээс админ дараа нь татгалзвал буцаад хасагдана."""
+    for pause in pauses:
+        record = records.get(pause["employee_id"])
+        seconds = pause.get("seconds")
+        if not record or pause.get("status") != "approved" or not seconds or not pause["time"].startswith(date):
+            continue
+        record["work"] += seconds
+        record["away"] = max(0, record["away"] - seconds)
+        start = to_minutes(pause["time"][11:16])
+        end = min((start * 60 + int(pause["time"][17:19]) + seconds) // 60, 24 * 60 - 1)
+        for minute in range(start, int(end) + 1):
+            record["minutes"][f"{minute // 60:02d}:{minute % 60:02d}"] = "work"
+    return records
 
 
 def ago(seconds):

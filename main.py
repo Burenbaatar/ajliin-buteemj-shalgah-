@@ -1,13 +1,13 @@
 """1-р гишүүн — Tkinter GUI. Нэвтрэхэд ажилтан эсвэл админы эрхээр өөр табууд нээгдэнэ.
 
-Админ:   Ажилтнууд (шууд самбар), 7 хоног, Хэрэглэгчид, Хэлтэс, Тохиргоо. Админы компьютер сервер болно.
+Админ:   Ажилтнууд (шууд самбар), Түр зогсолт, 7 хоног, Хэрэглэгчид, Хэлтэс, Тохиргоо. Админы компьютер сервер болно.
 Ажилтан: админы серверт нэвтэрмэгц камер асаж, амьд хүн мөн эсэх, ажилтан өөрөө сууж байгаа эсэхийг шалгана.
          Өөрийн идэвхийн хэмжилт. 5 секунд тутам админы сервер рүү JSON-оор илгээнэ.
 """
 import os
 import time
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox
 
 import cv2
 
@@ -84,6 +84,10 @@ class ProductivityApp(tk.Tk):
         self.camera_state = None       # FaceMonitor-ийн сүүлийн төлөв; None = камер ажиллахгүй (кадр ирэхгүй)
         self.pending = []              # админ руу хараахан илгээгдээгүй өсөлтүүд
         self.pause_reason = ""
+        self.pause_id = None           # одоогийн түр зогсолтын id (админы серверээс)
+        self.pause_started = 0         # түр зогсоосон мөч (monotonic)
+        self.pause_ends = []           # админ руу хараахан илгээгдээгүй дууссан түр зогсолтын хугацаа
+        self.pause_statuses = {}       # түр зогсолтын id → админы шийдвэр (өөрчлөгдвөл дуу гаргана)
         self.seconds = 0
         self.retry_at = 0              # админ холбогдохгүй бол энэ хүртэл дахин оролдохгүй
         self.build_login()
@@ -123,12 +127,12 @@ class ProductivityApp(tk.Tk):
         ttk.Label(top, text=title, font=BOLD).pack(side="left", padx=(0, 20))
         self.tabs = ttk.Notebook(self)
         self.tabs.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.tab_frames = {}
         for name, build in pages:
             frame = ttk.Frame(self.tabs, padding=10)
             self.tabs.add(frame, text=name)
+            self.tab_frames[name] = frame
             build(frame)
-            if name == "Камер":
-                self.camera_tab = frame
         return top
 
     def open_employee(self):
@@ -148,6 +152,7 @@ class ProductivityApp(tk.Tk):
             return self.show_error(error)
         self.open_tabs("Ажилтан: " + self.me["name"],
                        [("Камер", self.build_camera), ("Компьютерийн идэвх", self.build_activity)])
+        self.show_my_pauses(self.me.get("pauses"))
         self.start_watching()                          # серверт холбогдмогц камер шууд ажиллана
 
     def open_admin(self):
@@ -169,7 +174,8 @@ class ProductivityApp(tk.Tk):
             return self.show_error("Сервер асаж чадсангүй. Энэ компьютер дээр админы програм аль хэдийн "
                                    "нээлттэй байж магадгүй.")
         self.geometry("1420x700")
-        top = self.open_tabs("Админ", [("Ажилтнууд", self.build_board), ("7 хоног", self.build_week),
+        top = self.open_tabs("Админ", [("Ажилтнууд", self.build_board), ("Түр зогсолт", self.build_pauses),
+                                       ("7 хоног", self.build_week),
                                        ("Хэрэглэгчид", self.build_employee), ("Хэлтэс", self.build_departments),
                                        ("Тохиргоо", self.build_settings)])
         ttk.Label(top, foreground="#1a5fb4", text=f"Ажилтнууд «Админы компьютер» талбарт: {reg.my_address()}   ·   "
@@ -197,8 +203,8 @@ class ProductivityApp(tk.Tk):
             self.tiles[name].pack(anchor="w")
         ttk.Label(frame, foreground="gray", wraplength=1380, text="Мөр дээр давхар дарвал тухайн ажилтны өнөөдрийн "
                   "бүх програм, хуудас, хулганы байршлыг харна. 5 секунд тутам шинэчлэгдэнэ. «Ажилласан» — камер "
-                  "ажилтныг өөрийг нь баталгаажуулсан (камер ажиллахгүй бол гар, хулгана хөдөлсөн) хугацаа. "
-                  "«Өөр хүн» — камерт бүртгэлтэй "
+                  "ажилтныг өөрийг нь баталгаажуулсан (камер ажиллахгүй бол гар, хулгана хөдөлсөн) хугацаа, мөн "
+                  "«Түр зогсолт» таб дээр зөвшөөрсөн түр зогсолт. «Өөр хүн» — камерт бүртгэлтэй "
                   "ажилтны оронд өөр хүн суусан, «Баталгаажаагүй» — амьд хүн гэдэг нь батлагдаагүй хугацаа."
                   ).pack(anchor="w", pady=(0, 6))
         self.board = table(frame, prod.COLUMNS, {"Ажилтан": 170, "Одоо": 210, "Одоогийн апп": 220,
@@ -212,9 +218,14 @@ class ProductivityApp(tk.Tk):
         self.refresh_board()
 
     def refresh_board(self):
-        """Ажилтнууд, Хэлтэс, 7 хоног табуудыг JSON болон шууд төлөвөөс шинэчилнэ."""
-        settings, employees = reg.load_settings(), reg.list_employees()
-        records = reg.day_records(time.strftime("%Y-%m-%d"))
+        """Ажилтнууд, Түр зогсолт, Хэлтэс, 7 хоног табуудыг JSON болон шууд төлөвөөс шинэчилнэ.
+        Админ зөвшөөрсөн түр зогсолтын хугацаа «Ажилласан»-д нэмэгдэнэ."""
+        settings, employees, pauses = reg.load_settings(), reg.list_employees(), reg.load_pauses()
+
+        def records_of(date):
+            return prod.add_approved_pauses(reg.day_records(date), pauses, date)
+
+        records = records_of(time.strftime("%Y-%m-%d"))
         rows = [prod.row_for(e, records.get(e["id"]), reg.live_status(e["id"]), settings, time.time())
                 for e in employees]
         self.board.delete(*self.board.get_children())
@@ -224,8 +235,9 @@ class ProductivityApp(tk.Tk):
             self.tiles[name].config(text=value)
         fill(self.departments, prod.department_rows(employees, rows))
         monday = time.time() - time.localtime().tm_wday * 86400
-        week = [reg.day_records(time.strftime("%Y-%m-%d", time.localtime(monday + i * 86400))) for i in range(7)]
+        week = [records_of(time.strftime("%Y-%m-%d", time.localtime(monday + i * 86400))) for i in range(7)]
         fill(self.week, [prod.week_row(e, week) for e in employees])
+        self.refresh_pauses(time.strftime("%Y-%m-%d", time.localtime(monday)))
 
     def show_detail(self, event):
         """Давхар дарсан ажилтны өнөөдрийн бүх програм, хуудас, хулгана, нээлттэй програм, түр зогсолт."""
@@ -244,7 +256,49 @@ class ProductivityApp(tk.Tk):
         for app in record.get("open", []):
             tree.insert("", "end", values=("Нээлттэй", app, ""))
         for pause in reg.pauses_today(employee_id):
-            tree.insert("", "end", values=("Түр зогссон", pause["reason"], pause["time"][11:16]))
+            tree.insert("", "end", values=("Түр зогссон", f"{pause['reason']} · {reg.PAUSE_STATUS[pause['status']]}",
+                                           f"{pause['time'][11:16]} · {self.pause_length(pause)}"))
+
+    # ---------------------------------------------------------- админ: Түр зогсолт
+    def build_pauses(self, frame):
+        buttons = row(frame)
+        button(buttons, "Зөвшөөрөх", lambda: self.set_pause_ui("approved"))
+        button(buttons, "Татгалзах", lambda: self.set_pause_ui("rejected"))
+        ttk.Label(frame, foreground="gray", wraplength=1380, text="Энэ 7 хоногийн түр зогсолтууд. Шалтгааныг уншаад "
+                  "«Зөвшөөрөх» дарвал түр зогссон хугацаа ажилтны «Ажилласан» цагт нэмэгдэж, «Гарсан»-аас хасагдана. "
+                  "«Татгалзах» дарвал «Гарсан» хэвээр үлдэнэ (зөвшөөрснөө ч буцааж болно). Хугацаа нь ажилтан "
+                  "хэмжилтээ үргэлжлүүлэх эсвэл дуусгах үед тодорхой болно.").pack(anchor="w", pady=(0, 6))
+        self.pauses = table(frame, ("Ажилтан", "Шалтгаан", "Эхэлсэн", "Хугацаа", "Төлөв"),
+                            {"Ажилтан": 170, "Шалтгаан": 650, "Эхэлсэн": 120, "Хугацаа": 120, "Төлөв": 130})
+        for status, color in (("pending", "#9a6700"), ("approved", "#1a7f37"), ("rejected", "#cf222e")):
+            self.pauses.tag_configure(status, foreground=color)
+
+    @staticmethod
+    def pause_length(pause):
+        seconds = pause.get("seconds")
+        return prod.duration(seconds) if seconds is not None else "дуусаагүй"
+
+    def refresh_pauses(self, since):
+        """Түр зогсолтын жагсаалт. Сонгосон мөрийг хадгална — 5 сек тутам шинэчлэхэд сонголт алдагдахгүй."""
+        selected = self.pauses.focus()
+        self.pauses.delete(*self.pauses.get_children())
+        pauses = reg.pauses_since(since)
+        for pause in pauses:
+            self.pauses.insert("", "end", iid=pause["id"], tags=(pause["status"],),
+                               values=(pause["employee_name"], pause["reason"], pause["time"][5:16],
+                                       self.pause_length(pause), reg.PAUSE_STATUS[pause["status"]]))
+        if selected and self.pauses.exists(selected):
+            self.pauses.focus(selected)
+            self.pauses.selection_set(selected)
+        waiting = sum(pause["status"] == "pending" for pause in pauses)
+        self.tabs.tab(self.tab_frames["Түр зогсолт"], text=f"Түр зогсолт ({waiting})" if waiting else "Түр зогсолт")
+
+    def set_pause_ui(self, status):
+        pause_id = self.pauses.focus()
+        if not pause_id:
+            return self.show_error("Түр зогсолтоо жагсаалтаас сонгоно уу.")
+        reg.set_pause_status(pause_id, status)
+        self.refresh_board()
 
     # ---------------------------------------------------------- админ: 7 хоног, хэлтэс
     def build_week(self, frame):
@@ -442,7 +496,7 @@ class ProductivityApp(tk.Tk):
         self.lift()
         self.attributes("-topmost", True)
         self.after(500, self.attributes, "-topmost", False)
-        self.tabs.select(self.camera_tab)
+        self.tabs.select(self.tab_frames["Камер"])
         self.bell()
 
     def close_camera_ui(self):
@@ -468,16 +522,27 @@ class ProductivityApp(tk.Tk):
                   "Товчлуурын даралт, дэлгэцийн зураг, хуудасны агуулга авахгүй. Камер админы серверт нэвтэрмэгц "
                   "асаж, амьд хүн мөн эсэх, бүртгэлтэй ажилтан өөрөө сууж байгаа эсэхийг шалгана. Камер ажиллаж "
                   "байвал ажилласан хугацаа зөвхөн камер таныг баталгаажуулсан үед тоологдоно. Камер ажиллахгүй бол "
-                  "гар, хулганы хөдөлгөөнөөр тооцно. Хэмжилтийн үеэр камер хаагдахгүй."
+                  "гар, хулганы хөдөлгөөнөөр тооцно. Хэмжилтийн үеэр камер хаагдахгүй. «Түр зогсоох» дарвал "
+                  "шалтгаанаа бичнэ — админ зөвшөөрвөл түр зогссон хугацаа ажилласанд тооцогдоно."
                   ).pack(anchor="w", pady=(0, 8))
-        buttons = row(frame)
-        button(buttons, "Хэмжилт эхлэх", self.start_activity)
-        button(buttons, "Түр зогсоох", self.pause_activity)
-        button(buttons, "Дуусгах", self.finish_activity)
+        self.activity_buttons = row(frame)
+        button(self.activity_buttons, "Хэмжилт эхлэх", self.start_activity)
+        button(self.activity_buttons, "Түр зогсоох", self.pause_activity)
+        button(self.activity_buttons, "Дуусгах", self.finish_activity)
+        # «Түр зогсоох» дарахад товчлуурын доор гарч, шалтгааныг бичүүлнэ
+        self.pause_form = ttk.Frame(frame)
+        ttk.Label(self.pause_form, text="Ямар шалтгаанаар түр зогсоож байна вэ?").pack(side="left")
+        self.pause_entry = ttk.Entry(self.pause_form, width=60)
+        self.pause_entry.pack(side="left", padx=4)
+        self.pause_entry.bind("<Return>", lambda event: self.send_pause())
+        button(self.pause_form, "Илгээх", self.send_pause)
+        button(self.pause_form, "Болих", self.hide_pause_form)
         self.activity_label = ttk.Label(frame, text="Хэмжилт эхлээгүй.", font=("Segoe UI", 11), wraplength=1000)
         self.activity_label.pack(anchor="w", pady=(4, 2))
         self.open_label = ttk.Label(frame, foreground="gray", wraplength=1000)
         self.open_label.pack(anchor="w", pady=(0, 6))
+        self.pause_list_label = ttk.Label(frame, foreground="#1a5fb4", wraplength=1000)   # админы шийдвэр
+        self.pause_list_label.pack(anchor="w", pady=(0, 6))
         self.usage_graph = tk.Canvas(frame, height=300, background="white")
         self.usage_graph.pack(fill="both", expand=True)
 
@@ -494,7 +559,9 @@ class ProductivityApp(tk.Tk):
             self.usage_graph.create_text(760, y + 10, text=prod.duration(seconds), anchor="e")
 
     def start_activity(self):
+        self.hide_pause_form()
         if self.tracker:                               # түр зогсоосон хэмжилтийг үргэлжлүүлнэ
+            self.end_pause()
             self.pause_reason = ""
             self.tracker.resume()
         else:
@@ -506,26 +573,63 @@ class ProductivityApp(tk.Tk):
         self.start_watching()                          # камерыг хаасан эсвэл нэвтрэхэд нээгдээгүй бол дахин асаана
 
     def pause_activity(self):
-        """Түр зогсоохдоо шалтгаан асууж админ руу илгээнэ."""
-        if self.tracker and not self.tracker.paused:  # хэмжиж байгаа үед л (аль хэдийн зогссон бол асуухгүй)
-            reason = simpledialog.askstring("Түр зогсоох", "Ямар шалтгаанаар түр зогсоож байна вэ?", parent=self)
-            if reason is None:
-                return
-            reason = reason.strip()
-            if not reason:
-                return self.show_error("Шалтгаанаа бичнэ үү.")
-            try:
-                reg.ask(self.host, {"action": "pause", "employee_id": self.me["id"], "reason": reason})
-            except (ValueError, OSError) as error:
-                return self.show_error(f"Админ руу илгээж чадсангүй: {error}")
-            self.tracker.pause()
-            self.pause_reason = reason
-            self.activity_label.config(text=f"Түр зогсоосон — админд илгээлээ: {reason}")
+        """«Түр зогсоох» дарахад товчлуурын доор шалтгаан бичих талбар гаргана."""
+        if not self.tracker or self.tracker.paused:   # хэмжиж байгаа үед л (аль хэдийн зогссон бол асуухгүй)
+            return
+        self.pause_form.pack(anchor="w", pady=(0, 8), after=self.activity_buttons)
+        self.pause_entry.focus_set()
+
+    def send_pause(self):
+        """Бичсэн шалтгааныг админ руу илгээгээд хэмжилтийг түр зогсооно."""
+        if not self.tracker or self.tracker.paused:
+            return self.hide_pause_form()
+        reason = self.pause_entry.get().strip()
+        if not reason:
+            self.pause_entry.focus_set()
+            return self.show_error("Шалтгаанаа бичнэ үү.")
+        try:
+            answer = reg.ask(self.host, {"action": "pause", "employee_id": self.me["id"], "reason": reason})
+        except (ValueError, OSError) as error:
+            return self.show_error(f"Админ руу илгээж чадсангүй: {error}")
+        self.tracker.pause()
+        self.pause_reason = reason
+        self.pause_id, self.pause_started = answer.get("id"), time.monotonic()
+        self.hide_pause_form()
+        self.activity_label.config(text=f"Түр зогсоосон. Шалтгаан: {reason}\n"
+                                        "Админд илгээлээ. Админ зөвшөөрвөл түр зогссон хугацаа ажилласанд "
+                                        "тооцогдоно. Үргэлжлүүлэх бол «Хэмжилт эхлэх» дарна уу.")
+
+    def end_pause(self):
+        """Түр зогсолт дууслаа: хэдэн секунд зогссоныг дараагийн илгээлтээр админ руу явуулна."""
+        if self.tracker and self.tracker.paused and self.pause_id:
+            self.pause_ends.append({"id": self.pause_id, "seconds": round(time.monotonic() - self.pause_started)})
+        self.pause_id = None
+
+    def show_my_pauses(self, pauses):
+        """Өнөөдрийн түр зогсолтууд ба админы шийдвэр. Админ шийдвэр гаргамагц дуу гаргана."""
+        if pauses is None:                             # хуучин админы програм илгээдэггүй
+            return
+        lines = []
+        for pause in pauses:
+            status = pause.get("status") or "pending"
+            if self.pause_statuses.get(pause["id"], status) != status:   # админ дөнгөж шийдвэрлэлээ
+                self.bell()
+            self.pause_statuses[pause["id"]] = status
+            note = {"approved": " — ажилласанд тооцогдоно", "rejected": " — ажилласанд тооцогдохгүй"}.get(status, "")
+            lines.append(f"{pause['time'][11:16]}  {pause['reason']} · {self.pause_length(pause)} · "
+                         f"{reg.PAUSE_STATUS.get(status, status)}{note}")
+        self.pause_list_label.config(text="Өнөөдрийн түр зогсолт:\n" + "\n".join(lines) if lines else "")
+
+    def hide_pause_form(self):
+        self.pause_entry.delete(0, "end")
+        self.pause_form.pack_forget()
 
     def finish_activity(self):
         """Хэмжилтийг дуусгаад сүүлийн өсөлтийг илгээнэ. Админы самбарт «Офлайн» болно."""
         if not self.tracker:
             return
+        self.hide_pause_form()
+        self.end_pause()                               # түр зогссон байсан бол хугацааг нь хамт илгээнэ
         summary = self.tracker.stop()
         self.send_live("offline")
         self.tracker = None
@@ -543,16 +647,19 @@ class ProductivityApp(tk.Tk):
         request = {"action": "live", "employee_id": self.me["id"], "computer": os.environ.get("COMPUTERNAME", ""),
                    "status": status or tracker.status, "app": tracker.app, "mouse": tracker.mouse_on,
                    "open": tracker.open, "reason": self.away_reason(), "deltas": self.pending,
+                   "pause_ends": self.pause_ends,              # дууссан түр зогсолтын хугацаа
+                   "pause_id": self.pause_id if tracker.paused else None,   # үргэлжилж буй түр зогсолт
                    "camera": self.camera_state is not None}   # False бол самбарт «(камергүй)»
         try:
             answer = reg.ask(self.host, request, timeout=0.5)
             tracker.away_after = answer["settings"]["away_after_sec"]     # админы тохиргоо
+            self.show_my_pauses(answer.get("pauses"))  # админ түр зогсолтыг зөвшөөрсөн эсэх
         except OSError:                                # админ холбогдохгүй — 30 сек дараа хамт илгээнэ
             self.retry_at = time.time() + 30
             return
         except ValueError:
             pass                                       # сервер хүлээж аваагүй (жишээ нь ажилтан устсан)
-        self.pending = []
+        self.pending, self.pause_ends = [], []
 
     def away_reason(self):
         """Админы самбарт «Гарсан (…)» гэж харагдах шалтгаан: түр зогсоосон эсвэл камер баталгаажуулаагүй."""
