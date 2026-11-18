@@ -85,6 +85,28 @@ def app_version() -> str:
     return m.group(1) if m else "0"
 
 
+def refresh_hub_ips() -> None:
+    """hub.json-д энэ (админы) компьютерийн одоогийн дотоод IP-г нэмнэ → exe-д багцлагдана. Сүлжээний DNS
+    компьютерийн нэрийг мэддэггүй үед ажилтны програм IP-ээр холбогдоно (client.HubClient)."""
+    import socket
+
+    from worktracker.net import local_ips
+
+    path = ROOT / "hub.json"
+    try:
+        hub = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return
+    if str(hub.get("host", "")).lower() != socket.gethostname().lower():
+        return  # өөр компьютерийн hub.json — тэр компьютерийн IP-г эндээс мэдэхгүй
+    ips = local_ips()
+    if ips and ips != hub.get("ips"):
+        hub["ips"] = ips
+        path.write_text(json.dumps(hub, ensure_ascii=False), encoding="utf-8")
+    log(f"hub.json IP: {', '.join(hub.get('ips') or []) or 'олдсонгүй'} (нэрээр олдохгүй үед ажилтнууд үүгээр "
+        "холбогдоно)")
+
+
 def share_local_path() -> Path | None:
     """--admin-setup үүсгэсэн хавтас (энэ компьютер дээр)."""
     candidates = [Path(os.environ.get("APPDATA", "")) / APP / "share.json", ROOT / "data" / "share.json"]
@@ -174,6 +196,7 @@ def main() -> None:
 
     if (ROOT / "hub.json").exists():
         log("hub.json (админы компьютерийн нэр, порт) програмд багцлагдана")
+        refresh_hub_ips()
     else:
         print("АНХААР: hub.json алга - эхлээд админы компьютер дээр `python main.py --admin-setup` ажиллуулна "
               "(эсвэл ажилтан анх нээхэд админы компьютерийн нэрийг асууна)")

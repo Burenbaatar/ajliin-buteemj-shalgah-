@@ -21,6 +21,8 @@
 Гарын үсэг: X-Uid, X-Ts (unix сек), X-Sig = hex(HMAC-SHA256(secret, "{ts}\\n{METHOD}\\n{path}\\n" + body)).
 
 Цаг: хариу бүр X-Time (серверийн unix цаг) толгойтой — ажилтны програм цагаа үүнд тааруулна (clock.Clock.sync).
+IP: хариу бүр X-Hub-Ips (энэ компьютерийн дотоод IP) толгойтой — сүлжээний DNS (1.1.1.1 г.м.) компьютерийн нэрийг
+мэддэггүй тул ажилтны програм нэрээр олохгүй үед сүүлд мэдсэн IP-ээр холбогдоно (client.HubClient).
 Сервер ажилтны өдрийн файлд өөрөө srv_first/srv_last (анх/сүүлд холбогдсон цаг) бичиж, өөрийн асаалттай
 байсан үеийг hub_uptime.json-д тэмдэглэнэ — ажилтан эдгээрийг өөрчилж чадахгүй (самбар харьцуулна).
 Админы компьютерийн цаг буруу байж болох тул серверийн цаг = системийн цаг + интернэтийн цагтай харьцуулсан
@@ -43,6 +45,7 @@ from pathlib import Path
 
 from . import APP_NAME, nettime
 from .clock import CLOCK
+from .net import local_ips
 from .share import (DEVICES_FILE, TIME_FILE, UPTIME_FILE, ShareClient, ShareError, read_json, utcnow_iso,
                     write_json)
 
@@ -100,6 +103,15 @@ class Hub:
         self._wall = time.time
         self._offset: float | None = None  # интернэтийн цаг − системийн цаг (мэдэхгүй бол None)
         self._offset_mark = 0.0            # хэмжих үеийн (системийн цаг − monotonic): цагийг өөрчилснийг танина
+        self._ips: tuple[float, list[str]] = (-1e9, [])
+
+    def ips(self) -> list[str]:
+        """Энэ компьютерийн дотоод IP (минут тутам шинэчилнэ; DHCP солигдож болно) — X-Hub-Ips толгойд."""
+        at, ips = self._ips
+        if time.monotonic() - at > 60:
+            ips = local_ips()
+            self._ips = (time.monotonic(), ips)
+        return ips
 
     # ------------------------------------------------------------------ асаах / зогсоох
     def start(self) -> bool:
@@ -295,6 +307,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("X-Time", f"{self.hub.now():.3f}")  # ажилтны програм цагаа тааруулна
+        self.send_header("X-Hub-Ips", ",".join(self.hub.ips()))  # нэрээр олдохгүй үед ажилтны програм ашиглана
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

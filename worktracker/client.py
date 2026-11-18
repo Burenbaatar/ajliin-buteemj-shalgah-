@@ -3,6 +3,9 @@
 Анх холбогдохдоо хувийн түлхүүр авч `%APPDATA%\\AjliinButeemj\\device.json`-д хадгална, дараа нь хүсэлт бүрт
 HMAC гарын үсэг зурна. exe дотор нууц үг байхгүй — зөвхөн админы компьютерийн нэр, порт (hub.json).
 Серверийн хариу бүрийн X-Time-аар програмын цагийг админы компьютерийн цагт тааруулна (clock.Clock.sync).
+Хаяг: эхлээд компьютерийн нэрээр (hub.json → host). Сүлжээний DNS (1.1.1.1 г.м.) дотоод нэрийг мэддэггүй тул
+Wi-Fi дээр нэрээр олох нь найдваргүй — олдохгүй бол серверийн X-Hub-Ips-ээс сүүлд мэдсэн IP (hub_addr.json),
+дараа нь exe-д багцалсан IP (hub.json → ips)-ээр холбогдоно. Түлхүүр нэртэй холбоотой хэвээр (device.json).
 cloud.py-д share.ShareClient-тэй ИЖИЛ интерфэйстэй: available(), select("wt_company"), rpc("wt_push"), set_name().
 """
 from __future__ import annotations
@@ -20,24 +23,72 @@ from . import __version__
 from .clock import CLOCK
 from .config import data_dir
 from .hub import sign
+from .net import lan_ips
 from .share import NetworkError, ShareError
 
 log = logging.getLogger(__name__)
 
 DEVICE_FILE = "device.json"
+ADDR_FILE = "hub_addr.json"  # админы компьютерийн сүүлд мэдсэн IP (нэрээр олдохгүй үед)
+FALLBACK_TIMEOUT = 6.0  # нөөц хаягаар оролдохдоо удаан хүлээхгүй
 
 
 class HubClient:
     def __init__(self, hub: dict, uid: str, name: str = ""):
         self.host, self.port = str(hub["host"]), int(hub["port"])
-        self.base = f"http://{self.host}:{self.port}"
         self.user_id = uid
         self.name = name
         self.root = None  # хавтасгүй (updater, selftest нь үүгээр ялгана)
         self.is_admin = False
         self._lock = threading.Lock()
+        self._addr_lock = threading.Lock()
         self._secret: str | None = None
         self._load_secret()
+        self._bundled_ips = lan_ips(hub.get("ips"))  # build.py багцалсан (админы компьютерийн тэр үеийн IP)
+        self._learned_ips = self._load_addrs()       # серверээс сүүлд мэдсэн
+        self._cur = self.host                        # сүүлд амжилттай холбогдсон хаяг
+
+    @property
+    def base(self) -> str:
+        return f"http://{self._cur}:{self.port}"
+
+    def _candidates(self) -> list[str]:
+        out = [self._cur]
+        for addr in (self.host, *self._learned_ips, *self._bundled_ips):
+            if addr not in out:
+                out.append(addr)
+        return out
+
+    def _addr_path(self):
+        return data_dir() / ADDR_FILE
+
+    def _load_addrs(self) -> list[str]:
+        try:
+            d = json.loads(self._addr_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(d, dict) or str(d.get("host", "")).lower() != self.host.lower():
+            return []
+        return lan_ips(d.get("ips"))
+
+    def _reached(self, addr: str, headers, t0: float) -> None:
+        """Сервер хариулсан: цагаа тааруулж, ажилласан хаягийг санана, серверийн шинэ IP-г хадгална."""
+        _sync_clock(headers, t0)
+        if addr != self._cur:
+            log.info("Админы компьютерт %s хаягаар холбогдлоо", addr)
+            self._cur = addr
+        ips = lan_ips(str((headers or {}).get("X-Hub-Ips") or "").split(","))
+        if not ips or ips == self._learned_ips:
+            return
+        with self._addr_lock:
+            self._learned_ips = ips
+            try:
+                p = self._addr_path()
+                tmp = p.with_suffix(".tmp")
+                tmp.write_text(json.dumps({"host": self.host, "ips": ips}), encoding="utf-8")
+                os.replace(tmp, p)
+            except OSError as exc:
+                log.debug("hub_addr.json бичиж чадсангүй: %s", exc)
 
     # ------------------------------------------------------------------ түлхүүр
     def _device_path(self):
@@ -83,22 +134,26 @@ class HubClient:
         if signed:
             ts = str(int(CLOCK.timestamp()))  # системийн цагийг ухраасан ч сервер хүлээн авна
             headers.update({"X-Uid": self.user_id, "X-Ts": ts, "X-Sig": sign(self._secret, ts, method, path, raw)})
-        req = urllib.request.Request(self.base + path, data=raw if method == "POST" else None, headers=headers,
-                                     method=method)
-        t0 = time.monotonic()
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                _sync_clock(resp.headers, t0)
-                return json.loads(resp.read().decode("utf-8") or "{}")
-        except urllib.error.HTTPError as exc:
-            _sync_clock(exc.headers, t0)
+        last: Exception | None = None
+        # Сүүлд ажилласан хаяг → нэр → сүүлд мэдсэн IP → багцалсан IP (сервер хариулмагц зогсоно)
+        for i, addr in enumerate(self._candidates()):
+            req = urllib.request.Request(f"http://{addr}:{self.port}{path}", data=raw if method == "POST" else None,
+                                         headers=headers, method=method)
+            t0 = time.monotonic()
             try:
-                msg = json.loads(exc.read().decode("utf-8")).get("message", "")
-            except (ValueError, UnicodeDecodeError, AttributeError):
-                msg = ""
-            raise _HttpError(exc.code, msg or f"HTTP {exc.code}") from None
-        except (urllib.error.URLError, OSError) as exc:
-            raise NetworkError(str(exc)) from None
+                with urllib.request.urlopen(req, timeout=timeout if i == 0 else min(timeout, FALLBACK_TIMEOUT)) as resp:
+                    self._reached(addr, resp.headers, t0)
+                    return json.loads(resp.read().decode("utf-8") or "{}")
+            except urllib.error.HTTPError as exc:
+                self._reached(addr, exc.headers, t0)
+                try:
+                    msg = json.loads(exc.read().decode("utf-8")).get("message", "")
+                except (ValueError, UnicodeDecodeError, AttributeError):
+                    msg = ""
+                raise _HttpError(exc.code, msg or f"HTTP {exc.code}") from None
+            except (urllib.error.URLError, OSError) as exc:
+                last = exc
+        raise NetworkError(str(last)) from None
 
     def _signed(self, method: str, path: str, body: dict | None = None, timeout: float = 20):
         with self._lock:

@@ -1,15 +1,48 @@
-"""HTTPS/SSL туслах.
+"""HTTPS/SSL туслах, дотоод сүлжээний IP.
 
 certifi-ийн гэрчилгээний багцыг ашиглана — компьютер бүрийн гэрчилгээний тохиргооноос хамаарахгүй.
+Зөвхөн стандарт сан (build.py ч импортолно).
 """
 from __future__ import annotations
 
+import ipaddress
 import json
+import socket
 import ssl
 import urllib.error
 import urllib.request
 
 _ctx: ssl.SSLContext | None = None
+MAX_HUB_IPS = 4
+
+
+def lan_ips(values) -> list[str]:
+    """Дотоод сүлжээний IPv4 хаягуудыг шүүнэ (давхардалгүй, дараалал хэвээр, ≤ MAX_HUB_IPS)."""
+    out: list[str] = []
+    for v in values if isinstance(values, (list, tuple)) else []:
+        try:
+            a = ipaddress.ip_address(str(v).strip())
+        except ValueError:
+            continue
+        if a.version == 4 and a.is_private and not a.is_loopback and not a.is_link_local and str(a) not in out:
+            out.append(str(a))
+    return out[:MAX_HUB_IPS]
+
+
+def local_ips() -> list[str]:
+    """Энэ компьютерийн дотоод сүлжээний IPv4 хаягууд, сүлжээ рүү гардаг үндсэн нь эхэндээ."""
+    found: list[str] = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))  # UDP: пакет илгээхгүй, аль адаптераар гарахыг л тодорхойлно
+            found.append(s.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        found += [ai[4][0] for ai in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)]
+    except OSError:
+        pass
+    return lan_ips(found)
 
 
 def ssl_context() -> ssl.SSLContext:
