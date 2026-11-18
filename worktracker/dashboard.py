@@ -10,7 +10,7 @@ import tkinter as tk
 from datetime import date, datetime, timedelta
 from tkinter import filedialog, messagebox, ttk
 
-from . import APP_TITLE
+from . import APP_TITLE, __version__, updater
 from . import dashdata as dd
 from .share import ShareClient
 from .uiutil import (ACCENT, BG, BORDER, FG, FONT, GAP, GREEN, MUTED, PENDING_BG, RED, STATUS_COLOR, SURFACE, Bg,
@@ -27,6 +27,11 @@ CAT_COLOR = {"productive": "#1a7f37", "unproductive": "#cf222e", "neutral": "#8c
 CAT_TEXT = {"productive": "бүтээмжтэй", "unproductive": "бүтээмжгүй", "neutral": "бусад"}
 WEEKDAYS = ["Да", "Мя", "Лх", "Пү", "Ба", "Бя", "Ня"]
 PAUSE_COLOR = {"pending": "#9a6700", "approved": GREEN, "rejected": RED}
+
+
+def _outdated(version: str | None) -> bool:
+    """Ажилтны програм админыхаас хуучин (хувилбаргүй = 3.2-оос өмнөх)."""
+    return updater.version_tuple(version or "0") < updater.version_tuple(__version__)
 
 
 def _mix(hex_a: str, hex_b: str, t: float) -> str:
@@ -106,6 +111,14 @@ class Dashboard(tk.Toplevel):
         # Админы компьютерийн цаг буруу бол (hub_time.json) — нуугдмал, хэрэгтэй үед л харагдана
         self.clock_warn = tk.Label(self, text="", font=(FONT, 11, "bold"), fg=ORANGE, bg=BG, anchor="w",
                                    justify="left", wraplength=1080, padx=14)
+        # Админ шинэ хувилбартай ч ажилтнуудад хуучныг тараасан бол — тэдний програм түр зогсоох шалтгаан г.м.
+        # шинэ боломжийг илгээдэггүй. Нэг товчоор энэ exe-г тараана.
+        self.update_warn = tk.Frame(self, bg=BG, padx=14)
+        self.update_warn_lbl = tk.Label(self.update_warn, text="", font=(FONT, 11, "bold"), fg=ORANGE, bg=BG,
+                                        anchor="w", justify="left", wraplength=880)
+        self.update_warn_lbl.pack(side="left", fill="x", expand=True)
+        self.publish_btn = button(self.update_warn, "Ажилтнуудад тараах", self._publish, primary=True)
+        self.publish_btn.pack(side="right")
 
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -156,6 +169,7 @@ class Dashboard(tk.Toplevel):
             self.clock_warn.pack(fill="x", before=self.nb, pady=(0, 6))
         else:
             self.clock_warn.pack_forget()
+        self._show_update_warning(raw)
         self._render_day()
         self._render_week()
         if self.is_admin:
@@ -163,6 +177,39 @@ class Dashboard(tk.Toplevel):
             self._render_users()
             self._render_departments()
         self._schedule()
+
+    def _show_update_warning(self, raw: dict) -> None:
+        pub = raw.get("published_version")
+        if not (self.is_admin and updater.supported()) or \
+                (pub and updater.version_tuple(pub) >= updater.version_tuple(__version__)):
+            return self.update_warn.pack_forget()
+        old = sum(1 for p in raw["profiles"] if p.get("active", True) and _outdated(p.get("version")))
+        self.update_warn_lbl.config(text=(
+            f"⚠ Ажилтнуудад тараасан хувилбар: {pub or 'алга'}, таных: {__version__}. "
+            + (f"{old} ажилтны програм хуучин — " if old else "Ажилтнуудын програм хуучин хэвээр үлдэж, ")
+            + "«Зогсоох» дарахад бичсэн шалтгаан зэрэг шинэ боломж тэднээс ирэхгүй."))
+        self.update_warn.pack(fill="x", before=self.nb, pady=(0, 6))
+
+    def _publish(self) -> None:
+        if not messagebox.askokcancel(
+                APP_TITLE, f"Энэ програмыг ({__version__}) бүх ажилтанд тараах уу?\n\n"
+                           "Тэдний програм 30 минутын дотор (эсвэл дараагийн удаа асахад) өөрөө шинэчлэгдэж, "
+                           "дахин эхэлнэ.", parent=self):
+            return
+        self.publish_btn.config(state="disabled", text="Тарааж байна…")
+
+        def done(version: str) -> None:
+            self.publish_btn.config(state="normal", text="Ажилтнуудад тараах")
+            self.update_warn.pack_forget()
+            messagebox.showinfo(APP_TITLE, f"{version} хувилбарыг тараалаа. Ажилтнуудын програм 30 минутын дотор "
+                                           "шинэчлэгдэнэ (Хэрэглэгчид → Хувилбар баганаас харна).", parent=self)
+
+        def failed(exc: Exception) -> None:
+            self.publish_btn.config(state="normal", text="Ажилтнуудад тараах")
+            messagebox.showerror(APP_TITLE, f"Тарааж чадсангүй: {friendly(exc)}\n\nХэдэн секундын дараа дахин "
+                                            "оролдоно уу.", parent=self)
+
+        self.bg.run(lambda: updater.publish_self(self.api.root), done, failed)
 
     def _failed(self, exc: Exception) -> None:
         self._loading = False
@@ -200,7 +247,11 @@ class Dashboard(tk.Toplevel):
         if sig == self._live_sig:
             return  # өөрчлөлтгүй — дахин зурахгүй
         self._live_sig = sig
+        was_paused = {r["user_id"] for r in self._raw["live"] if r.get("paused")}
         self._raw["live"] = live
+        if any(r.get("paused") and r["user_id"] not in was_paused for r in live):
+            # Шинээр зогссон: шалтгаан нь өдрийн файлд (live.json-оос өмнө) бичигдсэн — 30 сек хүлээлгүй даруй татна
+            return self.refresh()
         self.data = dd.build_raw(self._raw)
         self._render_day()
 
@@ -500,7 +551,7 @@ class Dashboard(tk.Toplevel):
         cols = ("name", "host", "dept", "active", "ver", "face")
         self.users_tv = ttk.Treeview(tab, columns=cols, show="headings", selectmode="browse")
         for c, title, w in zip(cols, ("Нэр", "Компьютер (хэрэглэгч@компьютер)", "Хэлтэс", "Төлөв", "Хувилбар", "Царай"),
-                               (220, 280, 180, 90, 80, 110)):
+                               (220, 280, 180, 90, 100, 110)):
             self.users_tv.heading(c, text=title)
             self.users_tv.column(c, width=w, anchor="w")
         self.users_tv.tag_configure("new", background=PENDING_BG)
@@ -543,7 +594,8 @@ class Dashboard(tk.Toplevel):
             tags = ("inactive",) if not p["active"] else (("new",) if p["department_id"] is None else ())
             tv.insert("", "end", iid=p["user_id"], tags=tags, values=(
                 p["full_name"] or "—", p["email"], dept.get(p["department_id"], "—"),
-                "Идэвхтэй" if p["active"] else "Хаалттай", p.get("version") or "хуучин",
+                "Идэвхтэй" if p["active"] else "Хаалттай",
+                ("⚠ " if _outdated(p.get("version")) else "") + (p.get("version") or "хуучин"),
                 dd.FACE_TEXT.get(p.get("face") or "", "—")))
         self.u_dept_cb.configure(values=["—"] + [d["name"] for d in self.data["departments"]])
         if sel and tv.exists(sel[0]):

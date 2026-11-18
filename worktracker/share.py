@@ -277,6 +277,7 @@ class ShareClient:
         self.name = name
         self.is_admin = False  # админ нууц үгээр самбар нээхэд True болно
         self._profile_done = False
+        self._profile_version: str | None = None
         self._removed = False
         self._removed_checked = -1e9
 
@@ -464,16 +465,19 @@ class ShareClient:
             cam = None
         me = self.people_dir / self.user_id
         hostname = _short(p.get("p_hostname") or "", 100)
+        version = _short(p.get("p_version"), 20) or ""
         now = utcnow_iso()
 
-        if not self._profile_done:
+        # Хувилбар солигдвол ч дахин бичнэ: hub энэ объектыг ажилтан бүрт хадгалдаг тул ажилтан шинэчлэгдээд
+        # дахин холбогдоход самбарын "Хувилбар" багана хуучин хэвээр үлдэхгүй
+        if not self._profile_done or version != self._profile_version:
             old = read_json(me / "profile.json", {}) or {}
             write_json(me / "profile.json", {
                 "full_name": self.name[:100], "windows_user": _short(p.get("p_windows_user"), 100) or default_name(),
                 "hostname": hostname, "platform": _short(p.get("p_platform") or "", 50),
-                "version": _short(p.get("p_version"), 20) or "", "created_at": old.get("created_at") or now,
+                "version": version, "created_at": old.get("created_at") or now,
             })
-            self._profile_done = True
+            self._profile_done, self._profile_version = True, version
 
         if not p.get("p_live_only"):  # апп солигдоход зөвхөн live.json-г бичнэ (өдрийн дүн минут тутам)
             day_path = me / "days" / f"{day}.json"

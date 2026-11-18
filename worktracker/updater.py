@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from . import __version__
@@ -26,6 +27,7 @@ log = logging.getLogger(__name__)
 CHECK_EVERY_SEC = 30 * 60
 UPDATE_DIR = "update"
 VERSION_FILE = "version.json"
+LEGACY_SHARE = Path(r"C:\AjliinButeemjShare")  # 3.1.x хувилбарууд шинэчлэлээ эндээс авна (build.py-тэй ижил)
 
 
 def version_tuple(v: str) -> tuple[int, ...]:
@@ -66,6 +68,48 @@ def check_share(share, current: str = __version__) -> dict | None:
     if meta.get("file", name) != name or version_tuple(version) <= version_tuple(current) or not meta.get("sha256"):
         return None
     return {"version": version, **source, "size": int(meta.get("size") or 0), "sha256": str(meta["sha256"]).lower()}
+
+
+def published_version(root: Path) -> str | None:
+    """Админ: ажилтнуудад тараасан (update/version.json) хувилбар; хэзээ ч тараагаагүй бол None."""
+    try:
+        meta = json.loads((Path(root) / UPDATE_DIR / VERSION_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(meta, dict) or not meta.get("version"):
+        return None
+    return str(meta["version"])
+
+
+def publish_self(root: Path) -> str:
+    """Админ: одоо ажиллаж буй .exe-г update/ руу байршуулна (build.py --publish-тэй ижил) → ажилтнуудын програм
+    30 минутын дотор өөрөө шинэчлэгдэнэ. Самбарын «Ажилтнуудад тараах» товч."""
+    if not is_frozen():
+        raise RuntimeError("Зөвхөн .exe-ээс тараана (Python-оор ажиллуулж байвал: python build.py --publish)")
+    src, name = Path(sys.executable), asset_name()
+    h = hashlib.sha256()
+    with open(src, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    meta = {"version": __version__, "file": name, "size": src.stat().st_size, "sha256": h.hexdigest(),
+            "published_at": datetime.now().isoformat(timespec="seconds")}
+    folders = [Path(root) / UPDATE_DIR] + ([LEGACY_SHARE / UPDATE_DIR] if LEGACY_SHARE.is_dir() else [])
+    for i, folder in enumerate(folders):
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            tmp = folder / (name + ".tmp")
+            shutil.copy2(src, tmp)
+            os.replace(tmp, folder / name)
+            # version.json-г хамгийн сүүлд бичнэ — exe бүрэн хуулагдахаас өмнө хэн ч шинэчлэл эхлүүлэхгүй
+            vtmp = folder / (VERSION_FILE + ".tmp")
+            vtmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(vtmp, folder / VERSION_FILE)
+        except OSError as exc:
+            if i == 0:
+                raise
+            log.warning("3.1.x-ийн хавтсанд тарааж чадсангүй (%s): %s", folder, exc)
+    log.info("Ажилтнуудад %s хувилбарыг тараалаа", __version__)
+    return __version__
 
 
 def _open_source(info: dict):

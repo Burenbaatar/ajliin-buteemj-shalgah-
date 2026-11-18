@@ -29,6 +29,7 @@ CAMERA_WARN = {"blocked": "⚠ Камер таглагдсан байна", "sta
 PAUSED_COLOR = "#9a6700"
 FACE_CHECK_SEC = 600  # админ царай танихыг асаасан эсэх, бүртгэлтэй эсэхийг ийм давтамжтай шалгана
 PAUSE_CHECK_SEC = 60  # түр зогсолтыг админ зөвшөөрсөн эсэхийг ийм давтамжтай шалгана
+ADMIN_PAUSE_CHECK_SEC = 15  # админы компьютер: ажилтны шинэ түр зогсолтыг (локал файл) ийм давтамжтай шалгана
 PAUSE_STATUS_COLOR = {"pending": PAUSED_COLOR, "approved": GREEN, "rejected": RED}
 PAUSE_PROMPT = ("Яагаад түр зогсоож байна вэ?\n\n"
                 "Шалтгаан админд очно. Админ зөвшөөрвөл зогссон хугацаа ажилласан цагт тооцогдоно, "
@@ -258,7 +259,7 @@ class MainWindow:
             self._pause_next = time.monotonic() + PAUSE_CHECK_SEC
             self.check_pauses()
         if self._admin_hub and time.monotonic() >= self._admin_pause_next:
-            self._admin_pause_next = time.monotonic() + PAUSE_CHECK_SEC
+            self._admin_pause_next = time.monotonic() + ADMIN_PAUSE_CHECK_SEC
             self.check_admin_pauses()
         self.rows["app"].config(text=(s["app"] or "-")[:32])
         if s["paused"]:

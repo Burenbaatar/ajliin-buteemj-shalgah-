@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 
 from .share import PAUSE_TEXT, ShareClient
+from .updater import published_version
 
 OFFLINE_AFTER_SEC = 180  # сүүлийн мэдээллээс хойш ийм удаан бол "Офлайн"
 # Програмын бүртгэлээр ирсэн цагаас хойш ийм удаан админы компьютерт холбогдоогүй бол (сервер асаалттай байхад) ⚠
@@ -283,6 +284,8 @@ def fetch_raw(api: ShareClient, day: str) -> dict:
         "week": api.select("wt_daily", "user_id,day,work_seconds,pauses", day=[f"gte.{d0}", f"lte.{day}"]),
         "decisions": api.select("wt_pause_decisions"),
         "settings": (company[0].get("settings") if company else None) or {},
+        # Ажилтнуудад тараасан хувилбар — админых шинэ бол самбар анхааруулна (хуучин програм шалтгаан илгээдэггүй)
+        "published_version": published_version(api.root) if getattr(api, "root", None) is not None else None,
     }
 
 
